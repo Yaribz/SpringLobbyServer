@@ -10,7 +10,7 @@ Following projects use the SpringLobbyServer module:
 
 Dependencies
 ------------
-The SpringLobbyInterface module depends on following project:
+The SpringLobbyServer module depends on following project:
 * RsaCertPem
 * [SpringLobbyProtocol](https://github.com/Yaribz/SpringLobbyProtocol)
 * [AnyEvent](https://metacpan.org/pod/AnyEvent)
