@@ -35,6 +35,13 @@
 #   Processing:
 #     should update $r_connInfo "country" field
 ########################################
+# onMotd:
+# ------
+#   Parameters:
+#     $r_connInfo,$login,$r_userInfo,$r_motd
+#   Processing:
+#     can update $r_motd
+########################################
 # onAdditionalInGameTime:
 # ---------------------
 #   Parameters:
@@ -220,7 +227,7 @@ use Socket qw'unpack_sockaddr_in inet_ntoa';
 use RsaCertPem 'getPemCertificate';
 use SpringLobbyProtocol qw':server :regex :int32';
 
-our $VERSION='0.11';
+our $VERSION='0.12';
 
 use constant {
   IP_ADDR_LOOPBACK => 0,
@@ -236,7 +243,7 @@ use constant {
 
 my @LOG_LEVELS=('[ CRITICAL ]','[ ERROR    ]','[ WARNING  ]','[ NOTICE   ]','[ INFO     ]','[ DEBUG    ]');
 
-my %DEFAULT_PARAMS=(
+our %DEFAULT_PARAMS=(
   listenAddress => '0.0.0.0', # ('0' IPv4 wildcard, '::' IPv6 wildcard)
   listenPort => 8200,
   serverBannerCommand => 'TASSERVER',
@@ -269,6 +276,7 @@ my %DEFAULT_PARAMS=(
     'The server is hosting {CHANNELS} chat channels and {BATTLES} battles.',
     'Server uptime is {UPTIME}.',
   ],
+  onMotd => undef,
   onNewClientConnection => undef,
   onNewClientConnectionAsync => undef,
   onAdditionalInGameTime => undef,
@@ -311,7 +319,7 @@ my %DEFAULT_PARAMS=(
   maxFailedAgreementRateByHost => [[10,2]],                             # maximum rate of failed agreement confirmation by host
     );
 
-my %DEFAULT_PARAMS_LAN_MODE=(
+our %DEFAULT_PARAMS_LAN_MODE=(
   maxConnFailedLogin => 0,
   unauthentConnTimeout => 0,
   maxIgnoresByAccount => 0,
@@ -1576,7 +1584,11 @@ sub hLogin_allowed {
   my @loginInfoCmds;
   push(@loginInfoCmds,['SERVERMSG',$SRVMSG_LOBBY_PROTOCOL_EXTENSIONS])
       if(length($r_userInfo->{lobbyClient}) > 6 && substr($r_userInfo->{lobbyClient},0,7) eq 'SPADS v');
-  if(defined $self->{motd}) {
+  my @motd;
+  @motd=@{$self->{motd}} if(defined $self->{motd});
+  $self->{onMotd}($r_connInfo,$userName,$r_userInfo,\@motd)
+      if(defined $self->{onMotd});
+  if(@motd) {
     my %motdPlaceholders=(
       USERNAME => $userName,
       CLIENTS => scalar keys %{$self->{connections}},
@@ -1584,7 +1596,6 @@ sub hLogin_allowed {
       BATTLES => scalar keys %{$self->{battles}},
       UPTIME => secToTime(time-$self->{startTime}),
         );
-    my @motd=@{$self->{motd}};
     foreach my $motdString (@motd) {
       map {$motdString =~ s/\{$_\}/$motdPlaceholders{$_}/g} (keys %motdPlaceholders);
     }

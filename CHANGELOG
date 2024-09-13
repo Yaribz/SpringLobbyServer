@@ -1,3 +1,5 @@
 SpringLobbyServer.pm:
 ====================
 0.11: first public version
+0.12: add "onMotd" callback to allow customizing the MOTD dynamically
+      change %DEFAULT_PARAMS and %DEFAULT_PARAMS_LAN_MODE lexical variables to package variables
