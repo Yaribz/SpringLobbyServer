@@ -227,7 +227,7 @@ use Socket qw'unpack_sockaddr_in inet_ntoa';
 use RsaCertPem 'getPemCertificate';
 use SpringLobbyProtocol qw':server :regex :int32';
 
-our $VERSION='0.12';
+our $VERSION='0.13';
 
 use constant {
   IP_ADDR_LOOPBACK => 0,
@@ -248,6 +248,7 @@ our %DEFAULT_PARAMS=(
   listenPort => 8200,
   serverBannerCommand => 'TASSERVER',
   protocolVersion => '0.37',
+  protocolExtensions => undef,
   engineVersion => '*',
   natHelperPort => '8201', # (unimplemented)
   serverMode => SRV_MODE_LAN,
@@ -460,10 +461,8 @@ our %IGNORED_CMDS; map {$IGNORED_CMDS{$_}=1} (qw'
 my %DEFAULT_SRVBOT_INFO=(country => undef, cpu => 0, accountId => 0, lobbyClient => 'ServerBot');
 my %DEFAULT_SRVBOT_STATUS=(inGame => 0, rank => 0, away => 0, access => 1, bot => 1);
 
-my $SRVMSG_LOBBY_PROTOCOL_EXTENSIONS = '@PROTOCOL_EXTENSIONS@ '.JSON::PP::encode_json(
-  {
-    'sayBattlePrivate:multicast' => 1,
-  }
+my %DEFAULT_LOBBY_PROTOCOL_EXTENSIONS = (
+  'sayBattlePrivate:multicast' => 1,
     );
 
 sub new {
@@ -491,6 +490,28 @@ sub new {
       if($self->{serverMode} != SRV_MODE_LAN && ! defined $self->{registrationSvc} && ! defined $self->{registrationSvcAsync});
   
   $self->{banner} = join(' ',@{$self}{qw'serverBannerCommand protocolVersion engineVersion natHelperPort serverMode'})."\cJ";
+
+  my %protocolExtensions=%DEFAULT_LOBBY_PROTOCOL_EXTENSIONS;
+  if(defined $self->{protocolExtensions}) {
+    foreach my $protExt (keys %{$self->{protocolExtensions}}) {
+      if(defined $self->{protocolExtensions}{$protExt}) {
+        $protocolExtensions{$protExt}=$self->{protocolExtensions}{$protExt};
+      }else{
+        delete $protocolExtensions{$protExt};
+      }
+    }
+  }
+  $self->{protocolExtensions}=\%protocolExtensions;
+  $self->{srvMsgProtocolExtensions}='@PROTOCOL_EXTENSIONS@ '.JSON::PP::encode_json(\%protocolExtensions)
+      if(%protocolExtensions);
+  if($protocolExtensions{'battleStatus:teams-8bit'}) {
+    $self->{marshallBattleStatusFunc} =  \&marshallBattleStatusEx;
+    $self->{unmarshallBattleStatusFunc} = \&unmarshallBattleStatusEx;
+  }else{
+    $self->{marshallBattleStatusFunc} =  \&marshallBattleStatus;
+    $self->{unmarshallBattleStatusFunc} = \&unmarshallBattleStatus;
+  }
+  
   @{$self}{qw'privateKeyPem certPem'}=getPemCertificate(@{$self}{qw'pemKeyFile pemCertFile'});
   @{$self}{qw'connections connQueues users lcUsers accounts channels battles serverBots lcServerBots channelBots'}=({},{},{},{},{},{},{},{},{},{});
   $self->{nextBattleId}=1;
@@ -1582,8 +1603,8 @@ sub hLogin_allowed {
   $self->{accounts}{$accountId}=$userName if($accountId);
   $self->{lcUsers}{$lcUserName}=$userName;
   my @loginInfoCmds;
-  push(@loginInfoCmds,['SERVERMSG',$SRVMSG_LOBBY_PROTOCOL_EXTENSIONS])
-      if(length($r_userInfo->{lobbyClient}) > 6 && substr($r_userInfo->{lobbyClient},0,7) eq 'SPADS v');
+  push(@loginInfoCmds,['SERVERMSG',$self->{srvMsgProtocolExtensions}])
+      if(exists $self->{srvMsgProtocolExtensions} && length($r_userInfo->{lobbyClient}) > 6 && substr($r_userInfo->{lobbyClient},0,7) eq 'SPADS v');
   my @motd;
   @motd=@{$self->{motd}} if(defined $self->{motd});
   $self->{onMotd}($r_connInfo,$userName,$r_userInfo,\@motd)
@@ -2281,7 +2302,7 @@ sub hMyBattleStatus {
   return unless(defined $bId);
   my $r_b=$self->{battles}{$bId};
   my $r_bu=$r_b->{users}{$login};
-  my $r_bs=unmarshallBattleStatus($marshalledBattleStatus);
+  my $r_bs=$self->{unmarshallBattleStatusFunc}($marshalledBattleStatus);
   $r_bs->{mode}=0
       if($r_bs->{mode}
          && ! $r_bu->{battleStatus}{mode}
@@ -2291,7 +2312,7 @@ sub hMyBattleStatus {
     $commandIsEffective=1;
     $r_bs->{bonus}=$r_bu->{battleStatus}{bonus};
     $r_bu->{battleStatus}=$r_bs;
-    $r_bu->{marshalledBattleStatus}=marshallBattleStatus($r_bs); # always remarshall to enforce unused bits = 0
+    $r_bu->{marshalledBattleStatus}=$self->{marshallBattleStatusFunc}($r_bs); # always remarshall to enforce unused bits = 0
   }
   my $r_c=unmarshallColor($marshalledColor);
   if(any {$r_c->{$_} != $r_bu->{color}{$_}} (keys %{$r_c})) {
@@ -2314,12 +2335,12 @@ sub hAddBot {
   return unless(defined $bId);
   my $r_b=$self->{battles}{$bId};
   return if(exists $r_b->{bots}{$botName});
-  my $r_bs=unmarshallBattleStatus($marshalledBattleStatus);
+  my $r_bs=$self->{unmarshallBattleStatusFunc}($marshalledBattleStatus);
   my $r_c=unmarshallColor($marshalledColor);
   $r_b->{bots}{$botName}={
     owner => $login,
     battleStatus => $r_bs,
-    marshalledBattleStatus => marshallBattleStatus($r_bs),
+    marshalledBattleStatus => $self->{marshallBattleStatusFunc}($r_bs),
     color => $r_c,
     marshalledColor => marshallColor($r_c),
     aiDll => $aiDll,
@@ -2350,12 +2371,12 @@ sub hUpdateBot {
   return unless(defined $bId);
   my $r_bb=$self->{battles}{$bId}{bots}{$botName};
   return unless(defined $r_bb && $r_bb->{owner} eq $login || $self->{battles}{$bId}{founder} eq $login);
-  my $r_bs=unmarshallBattleStatus($marshalledBattleStatus);
+  my $r_bs=$self->{unmarshallBattleStatusFunc}($marshalledBattleStatus);
   my $commandIsEffective;
   if(any {$r_bs->{$_} != $r_bb->{battleStatus}{$_}} (keys %{$r_bs})) {
     $commandIsEffective=1;
     $r_bb->{battleStatus}=$r_bs;
-    $r_bb->{marshalledBattleStatus}=marshallBattleStatus($r_bs); # always remarshall to enforce unused bits = 0
+    $r_bb->{marshalledBattleStatus}=$self->{marshallBattleStatusFunc}($r_bs); # always remarshall to enforce unused bits = 0
   }
   my $r_c=unmarshallColor($marshalledColor);
   if(any {$r_c->{$_} != $r_bb->{color}{$_}} (keys %{$r_c})) {
@@ -2378,7 +2399,7 @@ sub hForceSpectatorMode {
   my $r_bu=$r_b->{users}{$forcedUser};
   return unless($r_b->{founder} eq $login && defined $r_bu && $r_bu->{battleStatus}{mode});
   $r_bu->{battleStatus}{mode}=0;
-  $r_bu->{marshalledBattleStatus}=marshallBattleStatus($r_bu->{battleStatus});
+  $r_bu->{marshalledBattleStatus}=$self->{marshallBattleStatusFunc}($r_bu->{battleStatus});
   return broadcastBattle($self,$bId,'CLIENTBATTLESTATUS',$forcedUser,$r_bu->{marshalledBattleStatus},$r_bu->{marshalledColor});
 }
 
@@ -2394,7 +2415,7 @@ sub hForceTeamNo {
   my $r_bu=$r_b->{users}{$forcedUser};
   return unless($r_b->{founder} eq $login && defined $r_bu && $r_bu->{battleStatus}{id} != $teamNb);
   $r_bu->{battleStatus}{id}=$teamNb;
-  $r_bu->{marshalledBattleStatus}=marshallBattleStatus($r_bu->{battleStatus});
+  $r_bu->{marshalledBattleStatus}=$self->{marshallBattleStatusFunc}($r_bu->{battleStatus});
   return broadcastBattle($self,$bId,'CLIENTBATTLESTATUS',$forcedUser,$r_bu->{marshalledBattleStatus},$r_bu->{marshalledColor});
 }
 
@@ -2410,7 +2431,7 @@ sub hForceAllyNo {
   my $r_bu=$r_b->{users}{$forcedUser};
   return unless($r_b->{founder} eq $login && defined $r_bu && $r_bu->{battleStatus}{team} != $teamNb);
   $r_bu->{battleStatus}{team}=$teamNb;
-  $r_bu->{marshalledBattleStatus}=marshallBattleStatus($r_bu->{battleStatus});
+  $r_bu->{marshalledBattleStatus}=$self->{marshallBattleStatusFunc}($r_bu->{battleStatus});
   return broadcastBattle($self,$bId,'CLIENTBATTLESTATUS',$forcedUser,$r_bu->{marshalledBattleStatus},$r_bu->{marshalledColor});
 }
 
@@ -2426,7 +2447,7 @@ sub hHandicap {
   my $r_bu=$r_b->{users}{$forcedUser};
   return unless($r_b->{founder} eq $login && defined $r_bu && $r_bu->{battleStatus}{bonus} != $bonus);
   $r_bu->{battleStatus}{bonus}=$bonus;
-  $r_bu->{marshalledBattleStatus}=marshallBattleStatus($r_bu->{battleStatus});
+  $r_bu->{marshalledBattleStatus}=$self->{marshallBattleStatusFunc}($r_bu->{battleStatus});
   return broadcastBattle($self,$bId,'CLIENTBATTLESTATUS',$forcedUser,$r_bu->{marshalledBattleStatus},$r_bu->{marshalledColor});
 }
 
