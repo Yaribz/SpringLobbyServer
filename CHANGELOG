@@ -5,3 +5,7 @@ SpringLobbyServer.pm:
       change %DEFAULT_PARAMS and %DEFAULT_PARAMS_LAN_MODE lexical variables to package variables
 0.13: add support for "battleStatus:teams-8bit" lobby protocol extension (disabled by default)
       allow enabling/disabling custom lobby protocol extensions in constructor
+0.14: use REGEX_AIBOTNAME to check AI bot names format instead of REGEX_USERNAME (fix Chobby clients being kicked when adding AI bot)
+      reject chat commands with empty message
+      do not send empty SETSCRIPTTAGS command to users joining a battle containing no script tag
+      new log/debug parameters to filter log writing by domain

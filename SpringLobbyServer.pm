@@ -227,7 +227,7 @@ use Socket qw'unpack_sockaddr_in inet_ntoa';
 use RsaCertPem 'getPemCertificate';
 use SpringLobbyProtocol qw':server :regex :int32';
 
-our $VERSION='0.13';
+our $VERSION='0.14';
 
 use constant {
   IP_ADDR_LOOPBACK => 0,
@@ -270,7 +270,8 @@ our %DEFAULT_PARAMS=(
     my $level = $LOG_LEVELS[$l];
     print "$timestamp $level $m\n";
   },
-  debug => 0,
+  skipLog => 0, # array of skippable log domains ("conn", "msg", "flood"), or "1" to skip all skippable log domains
+  debug => 0, # array of debug domains ("conn", "msg"), or "1" to enable all debug domains
   motd => [
     'Welcome, {USERNAME}!',
     'There are currently {CLIENTS} clients connected.',
@@ -511,6 +512,34 @@ sub new {
     $self->{marshallBattleStatusFunc} =  \&marshallBattleStatus;
     $self->{unmarshallBattleStatusFunc} = \&unmarshallBattleStatus;
   }
+
+  my %SKIPPABLE_LOG_DOMAINS = map {$_ => 1} (qw'conn msg flood');
+  $self->{'skipLog'.ucfirst($_)}=0 foreach(keys %SKIPPABLE_LOG_DOMAINS);
+  if($self->{skipLog}) {
+    if(ref $self->{skipLog} eq 'ARRAY') {
+      foreach my $skippedLogDomain (@{$self->{skipLog}}) {
+        croak "Invalid log domain \"$skippedLogDomain\" provided in \"skipLog\" parameter"
+            unless($SKIPPABLE_LOG_DOMAINS{$skippedLogDomain});
+        $self->{'skipLog'.ucfirst($skippedLogDomain)}=1;
+      }
+    }else{
+      $self->{'skipLog'.ucfirst($_)}=1 foreach(keys %SKIPPABLE_LOG_DOMAINS);
+    }
+  }
+
+  my %DEBUG_DOMAINS = map {$_ => 1} (qw'conn msg');
+  $self->{'debug'.ucfirst($_)}=0 foreach(keys %DEBUG_DOMAINS);
+  if($self->{debug}) {
+    if(ref $self->{debug} eq 'ARRAY') {
+      foreach my $debugDomain (@{$self->{debug}}) {
+        croak "Invalid debug domain \"$debugDomain\" provided in \"debug\" parameter"
+            unless($DEBUG_DOMAINS{$debugDomain});
+        $self->{'debug'.ucfirst($debugDomain)}=1;
+      }
+    }else{
+      $self->{'debug'.ucfirst($_)}=1 foreach(keys %DEBUG_DOMAINS);
+    }
+  }
   
   @{$self}{qw'privateKeyPem certPem'}=getPemCertificate(@{$self}{qw'pemKeyFile pemCertFile'});
   @{$self}{qw'connections connQueues users lcUsers accounts channels battles serverBots lcServerBots channelBots'}=({},{},{},{},{},{},{},{},{},{});
@@ -578,10 +607,10 @@ sub cleanPersistentCounters {
 
 sub onNewClientConnection {
   my ($self,$fh,$host,$port)=@_;
-  $self->{debug} && $self->{logger}("New client connection request from [$host:$port]",5);
+  $self->{debugConn} && $self->{logger}("New client connection request from [$host:$port]",5);
   if($self->{maxUnauthentByHost} && exists $self->{nbUnauthentByHost}{$host} && $self->{nbUnauthentByHost}{$host} >= $self->{maxUnauthentByHost}) {
     close($fh);
-    $self->{debug} && $self->{logger}("Denying client connection from [$host:$port] (too many simultaneous unauthenticated connections)",5);
+    $self->{skipLogConn} || $self->{logger}("Denying client connection from [$host:$port] (too many simultaneous unauthenticated connections)",3);
     return;
   }
   my $r_connInfo={host => $host, port => $port, country => $self->{defaultCountryCode}, connectTime => time};
@@ -589,7 +618,7 @@ sub onNewClientConnection {
     my $denyMsg=$self->{onNewClientConnection}($r_connInfo,$fh);
     if(defined $denyMsg) {
       close($fh);
-      $self->{debug} && $self->{logger}("Denying client connection from [$host:$port] ($denyMsg)",5);
+      $self->{skipLogConn} || $self->{logger}("Denying client connection from [$host:$port] ($denyMsg)",3);
       return;
     }
   }
@@ -600,7 +629,7 @@ sub onNewClientConnection {
         my $denyMsg=shift;
         if(defined $denyMsg) {
           close($fh);
-          $self->{debug} && $self->{logger}("Denying client connection from [$host:$port] ($denyMsg)",5);
+          $self->{skipLogConn} || $self->{logger}("Denying client connection from [$host:$port] ($denyMsg)",3);
           delete $self->{nbUnauthentByHost}{$host} unless(--$self->{nbUnauthentByHost}{$host} > 0);
         }else{
           allowedNewClientConnection($self,$fh,$r_connInfo),
@@ -655,13 +684,13 @@ sub allowedNewClientConnection {
       }
       closeClientConnection($weakSelf,$errorHdl,$networkError,$errorDetails,1);
     },
-    on_eof => sub {closeClientConnection($weakSelf,$_[0],'connection closed by peer',undef,1)},
+    on_eof => sub {closeClientConnection($weakSelf,$_[0],'connection closed by peer',undef,1,1)},
     on_rtimeout => sub {closeClientConnection($weakSelf,$_[0],'socket read timeout',undef,1)},
     on_wtimeout => sub {closeClientConnection($weakSelf,$_[0],'socket write timeout',undef,1)},
     on_read => sub {$_[0]->push_read(line => qr'\cM?\cJ+', sub {handleLobbyCmdFromClient($weakSelf,@_)})}, #skylobby puts several LF after STLS, TASClient puts CR before LF...
                );
   if($hdl) {
-    $self->{debug} && $self->{logger}("Allowing client connection from [$r_connInfo->{host}:$r_connInfo->{port}]",5);
+    $self->{debugConn} && $self->{logger}("Allowing client connection from [$r_connInfo->{host}:$r_connInfo->{port}]",5);
     $r_connInfo->{hdl}=$hdl;
     $r_connInfo->{ipAddrType}=getIpAddrType($r_connInfo->{host});
     $r_connInfo->{localIpAddr}=inet_ntoa((unpack_sockaddr_in(getsockname($fh)))[1]) if($r_connInfo->{ipAddrType} == IP_ADDR_LAN);
@@ -675,15 +704,21 @@ sub allowedNewClientConnection {
 }
 
 sub closeClientConnection {
-  my ($self,$hdl,$reason,$details,$skipQueueDrain)=@_;
+  my ($self,$hdl,$reason,$details,$skipQueueDrain,$isNormal)=@_;
   return if(exists $self->{closeClientConnectionInProgress}); # avoid recursive call to closeClientConnection (may happen when draining queue below)
   my $connIdx=$hdl->{connIdx};
   my $r_connInfo = delete $self->{connections}{$connIdx};
   my $host=$r_connInfo->{host};
   my $login=$r_connInfo->{login};
-  if($self->{debug}) {
+  my $eventLogLevel;
+  if($isNormal) {
+    $eventLogLevel=5 if($self->{debugConn});
+  }else{
+    $eventLogLevel=3 unless($self->{skipLogConn});
+  }
+  if(defined $eventLogLevel) {
     my $detailsStr = defined $details ? ' ('.$details.')' : '';
-    $self->{logger}('Removing connection of client'.(defined $login ? " \"$login\"" : '')." [$host:$r_connInfo->{port}]: $reason$detailsStr",5);
+    $self->{logger}('Removing connection of client'.(defined $login ? " \"$login\"" : '')." [$host:$r_connInfo->{port}]: $reason$detailsStr",$eventLogLevel);
   }
   if(defined $login) {
     my $r_userInfo = delete $self->{users}{$login};
@@ -754,7 +789,7 @@ sub handleLobbyCmdFromClient {
   }
   my $r_connInfo=$self->{connections}{$hdl->{connIdx}};
   my $login=$r_connInfo->{login};
-  $self->{debug} && $self->{logger}('Received from'.(defined $login ? " \"$login\"" : '')." [$r_connInfo->{host}:$r_connInfo->{port}]: \"$line\"",5);
+  $self->{debugMsg} && $self->{logger}('Received from'.(defined $login ? " \"$login\"" : '')." [$r_connInfo->{host}:$r_connInfo->{port}]: \"$line\"",5);
   return closeClientConnection($self,$hdl,'input flood')
       if(defined checkInputFlood($self,$r_connInfo,length($line)));
   my ($r_cmd,$cmdId) = eval { unmarshallClientCommand($line) };
@@ -782,9 +817,9 @@ sub handleLobbyCmdFromClient {
       }
     }
   }elsif($IGNORED_CMDS{$cmd}) {
-    $self->{debug} && $self->{logger}("Ignored command received from".(defined $login ? " \"$login\"" : '')." [$r_connInfo->{host}:$r_connInfo->{port}]: \"$cmd\"",5);
+    $self->{debugMsg} && $self->{logger}("Ignored command received from".(defined $login ? " \"$login\"" : '')." [$r_connInfo->{host}:$r_connInfo->{port}]: \"$cmd\"",5);
   }else{
-    $self->{logger}("Unsupported command received from".(defined $login ? " \"$login\"" : '')." [$r_connInfo->{host}:$r_connInfo->{port}]: \"$cmd\"",3);
+    $self->{skipLogMsg} || $self->{logger}("Unsupported command received from".(defined $login ? " \"$login\"" : '')." [$r_connInfo->{host}:$r_connInfo->{port}]: \"$cmd\"",3);
     closeClientConnection($self,$hdl,'protocol error','unknown command on unauthenticated connection') unless(defined $login);
   }
 }
@@ -802,10 +837,10 @@ sub checkInputFlood {
   }
   my $r_rlData=$r_connInfo->{inputRateCounters};
   my $idxThresh=checkDataRateLimits($r_thresholds,$r_rlData,$self->{netMsgRcvTime},$length);
-  return $idxThresh unless(defined $idxThresh && $self->{debug});
+  return $idxThresh unless(defined $idxThresh && ! $self->{skipLogFlood});
   my ($period,$maxCmds,$maxDataSize)=@{$r_thresholds->[$idxThresh]};
   my ($nbCmds,$dataSize)=@{$r_rlData->[0][$idxThresh][0]}[1,2];
-  $self->{logger}('Input flood from'.(defined $login ? " \"$login\"" : '')." [$r_connInfo->{host}:$r_connInfo->{port}]: period=${period}s., cmd=$nbCmds/$maxCmds, data=$dataSize/$maxDataSize",5);
+  $self->{logger}('Input flood from'.(defined $login ? " \"$login\"" : '')." [$r_connInfo->{host}:$r_connInfo->{port}]: period=${period}s., cmd=$nbCmds/$maxCmds, data=$dataSize/$maxDataSize",3);
   return $idxThresh;
 }
 
@@ -815,11 +850,11 @@ sub checkInducedTrafficFlood {
   return undef if($r_userStatus->{access});
   my $r_thresholds =  $self->{$r_userStatus->{bot} ? 'maxInducedTrafficRateByBot' : 'maxInducedTrafficRateByClient'};
   my $idxThresh=checkDataRateLimitsMulti($r_thresholds,$r_userInfo->{inducedTrafficRateCounters},$self->{netMsgRcvTime}//time(),$nbEvents,$sumData);
-  return $idxThresh unless(defined $idxThresh && $self->{debug});
+  return $idxThresh unless(defined $idxThresh && ! $self->{skipLogFlood});
   my ($period,$maxCmds,$maxDataSize)=@{$r_thresholds->[$idxThresh]};
   my ($nbCmds,$dataSize)=@{$r_userInfo->{inducedTrafficRateCounters}[0][$idxThresh][0]}[1,2];
   my $r_connInfo=$self->{connections}{$r_userInfo->{connIdx}};
-  $self->{logger}("Induced traffic flood from \"$r_connInfo->{login}\" [$r_connInfo->{host}:$r_connInfo->{port}]: period=${period}s., cmd=$nbCmds/$maxCmds, data=$dataSize/$maxDataSize",5);
+  $self->{logger}("Induced traffic flood from \"$r_connInfo->{login}\" [$r_connInfo->{host}:$r_connInfo->{port}]: period=${period}s., cmd=$nbCmds/$maxCmds, data=$dataSize/$maxDataSize",3);
   return $idxThresh;
 }
 
@@ -836,11 +871,11 @@ sub checkDbCmdFlood {
   return undef if($r_userStatus->{access});
   my $r_thresholds =  $self->{$r_userStatus->{bot} ? 'maxDbCmdRateByBot' : 'maxDbCmdRateByClient'};
   my $idxThresh=checkRateLimits($r_thresholds,$r_userInfo->{dbCmdCounters},$self->{netMsgRcvTime});
-  return $idxThresh unless(defined $idxThresh && $self->{debug});
+  return $idxThresh unless(defined $idxThresh && ! $self->{skipLogFlood});
   my ($period,$maxCmds)=@{$r_thresholds->[$idxThresh]};
   my $nbCmds=$r_userInfo->{dbCmdCounters}[0][$idxThresh][0][1];
   my $r_connInfo=$self->{connections}{$r_userInfo->{connIdx}};
-  $self->{logger}("Database access command flood from \"$r_connInfo->{login}\" [$r_connInfo->{host}:$r_connInfo->{port}]: period=${period}s., cmd=$nbCmds/$maxCmds",5);
+  $self->{logger}("Database access command flood from \"$r_connInfo->{login}\" [$r_connInfo->{host}:$r_connInfo->{port}]: period=${period}s., cmd=$nbCmds/$maxCmds",3);
   return $idxThresh;
 }
 
@@ -851,11 +886,11 @@ sub checkAccountLoginFlood {
   $self->{accountCounters}{login}{$accountIdOrLogin}//=[undef,undef];
   my $r_accLoginCounters=$self->{accountCounters}{login}{$accountIdOrLogin};
   my $idxThresh=checkRateLimits($self->{maxLoginRateByAccount},$r_accLoginCounters,$r_userInfo->{loginTime});
-  return $idxThresh unless(defined $idxThresh && $self->{debug});
+  return $idxThresh unless(defined $idxThresh && ! $self->{skipLogFlood});
   my ($period,$maxLogins)=@{$self->{maxLoginRateByAccount}[$idxThresh]};
   my $nbLogins=$r_accLoginCounters->[0][$idxThresh][0][1];
   my $r_connInfo=$self->{connections}{$r_userInfo->{connIdx}};
-  $self->{logger}("Login flood from \"$login\" [$r_connInfo->{host}:$r_connInfo->{port}]: period=${period}s., login=$nbLogins/$maxLogins",5);
+  $self->{logger}("Login flood from \"$login\" [$r_connInfo->{host}:$r_connInfo->{port}]: period=${period}s., login=$nbLogins/$maxLogins",3);
   return $idxThresh;
 }
 
@@ -870,10 +905,10 @@ sub checkAccountRenameFlood {
   }
   my $r_accRenameCounters=$self->{accountCounters}{rename}{$accountIdOrLogin};
   my $idxThresh=checkRateLimits($self->{maxRenameRateByAccount},$r_accRenameCounters,$currentTime,$partialMode);
-  return $idxThresh unless(defined $idxThresh && $self->{debug});
+  return $idxThresh unless(defined $idxThresh && ! $self->{skipLogFlood});
   my ($period,$maxRenames)=@{$self->{maxRenameRateByAccount}[$idxThresh]};
   my $nbRenames=$r_accRenameCounters->[0][$idxThresh][0][1];
-  $self->{logger}("Rename flood from \"$r_connInfo->{login}\" [$r_connInfo->{host}:$r_connInfo->{port}]: period=${period}s., rename=$nbRenames/$maxRenames",5);
+  $self->{logger}("Rename flood from \"$r_connInfo->{login}\" [$r_connInfo->{host}:$r_connInfo->{port}]: period=${period}s., rename=$nbRenames/$maxRenames",3);
   return $idxThresh;
 }
 
@@ -887,10 +922,10 @@ sub checkHostFlood {
   my $r_hostCounters=$r_countersByHost->{$host};
   my $r_thresholds=$self->{'max'.$checkType.'RateByHost'};
   my $idxThresh=checkRateLimits($r_thresholds,$r_hostCounters,$currentTime,$partialMode);
-  return $idxThresh unless(defined $idxThresh && $self->{debug});
+  return $idxThresh unless(defined $idxThresh && ! $self->{skipLogFlood});
   my ($period,$max)=@{$r_thresholds->[$idxThresh]};
   my $current=$r_hostCounters->[0][$idxThresh][0][1];
-  $self->{logger}($checkType." flood from host \"$host\": $current/$max (period=${period}s.)",5);
+  $self->{logger}($checkType." flood from host \"$host\": $current/$max (period=${period}s.)",3);
   return $idxThresh;
 }
 
@@ -1064,7 +1099,7 @@ sub sendClientMultiByIdx {
 # called by: sendClientByIdx, sendClientMulti, sendUserMarshalled
 sub sendClientMarshalled {
   my ($self,$connIdx,$r_msg)=@_;
-  if($self->{debug}) {
+  if($self->{debugMsg}) {
     my $r_connInfo=$self->{connections}{$connIdx};
     $self->{logger}('Sending to'.(defined $r_connInfo->{login} ? " \"$r_connInfo->{login}\"" : '')." [$r_connInfo->{host}:$r_connInfo->{port}]: \"".substr(${$r_msg},0,-1).'"',5);
   }
@@ -1311,7 +1346,7 @@ sub hPing {
 
 sub hExit {
   my ($self,$hdl,$r_connInfo,undef,undef,$r_cmd,$cmdId)=@_;
-  return closeClientConnection($self,$hdl,'quit',$r_cmd->[1],1);
+  return closeClientConnection($self,$hdl,'quit',$r_cmd->[1],1,1);
 }
 
 sub hListCompFlags {
@@ -1824,7 +1859,7 @@ sub hRenameAccount {
       }else{
         checkAccountRenameFlood($self,$r_userInfo,$currentTime,CNT_INCR_ONLY);
         sendClient($self,$hdl,['SERVERMSG','Your account has been renamed to '.$userName.'. Reconnect with the new username (you will now be automatically disconnected).'],$cmdId);
-        closeClientConnection($self,$hdl,'renaming');
+        closeClientConnection($self,$hdl,'renaming',undef,undef,1);
       }
     },
     $r_connInfo,$login,$r_userInfo,$userName,
@@ -2009,7 +2044,7 @@ sub hSay {
   my ($cmd,$chan,$msg)=@{$r_cmd};
   return closeClientConnection($self,$hdl,'protocol error',"invalid $cmd parameter")
       unless($chan =~ REGEX_CHANNEL
-             && length($msg) <= $self->{maxChatMsgLength});
+             && length($msg) <= $self->{maxChatMsgLength} && $msg ne '');
   return hSayBattle($self,$hdl,$r_connInfo,$login,$r_userInfo,[$cmd eq 'SAY' ? 'SAYBATTLE' : 'SAYBATTLEEX',$msg],$cmdId)
       if($chan =~ /^__battle__(\d+)$/ && defined $r_userInfo->{battle} && $1 == $r_userInfo->{battle});
   return sendClient($self,$hdl,['SERVERMSG',"Cannot send message to channel \"$chan\": not in channel!"],$cmdId)
@@ -2037,7 +2072,7 @@ sub hSayPrivate {
   my ($cmd,$recipient,$msg)=@{$r_cmd};
   return closeClientConnection($self,$hdl,'protocol error',"invalid $cmd parameter")
       unless($recipient =~ REGEX_USERNAME
-             && length($msg) <= $self->{maxChatMsgLength});
+             && length($msg) <= $self->{maxChatMsgLength} && $msg ne '');
   my $isExMsg = $cmd eq 'SAYPRIVATEEX';
   if(exists $self->{users}{$recipient}) {
     my $r_recipientUserInfo=$self->{users}{$recipient};
@@ -2058,7 +2093,7 @@ sub hSayPrivate {
     sendPrivateMsgToSrvBot($self,$r_connInfo,$login,$r_userInfo,$recipient,$msg,$isExMsg);
     return @inducedTraffic;
   }else{
-    $self->{debug} && $self->{logger}("\"$login\" tried to send private message to offline client \"$recipient\"",5);
+    $self->{debugMsg} && $self->{logger}("\"$login\" tried to send private message to offline client \"$recipient\"",5);
     return;
   }
 }
@@ -2218,7 +2253,8 @@ sub hJoinBattleAccept {
     },
     marshalledColor => 0,
   };
-  my @joinResCmds=(['SETSCRIPTTAGS',map {$_.'='.$r_b->{scriptTags}{$_}} (keys %{$r_b->{scriptTags}})]);
+  my @joinResCmds;
+  push(@joinResCmds,['SETSCRIPTTAGS',map {$_.'='.$r_b->{scriptTags}{$_}} (keys %{$r_b->{scriptTags}})]) if(%{$r_b->{scriptTags}});
   push(@joinResCmds,['DISABLEUNITS',keys %{$r_b->{disabledUnits}}]) if(%{$r_b->{disabledUnits}});
   map {
     push(@joinResCmds,['CLIENTBATTLESTATUS',$_,$r_b->{users}{$_}{marshalledBattleStatus},$r_b->{users}{$_}{marshalledColor}])
@@ -2328,7 +2364,7 @@ sub hAddBot {
   my ($self,$hdl,$r_connInfo,$login,$r_userInfo,$r_cmd,$cmdId)=@_;
   my (undef,$botName,$marshalledBattleStatus,$marshalledColor,$aiDll)=@{$r_cmd};
   return closeClientConnection($self,$hdl,'protocol error','invalid ADDBOT parameter')
-      unless($botName =~ REGEX_USERNAME
+      unless($botName =~ REGEX_AIBOTNAME
              && (all {$_ =~ REGEX_INT32 && $_ >= INT32_MIN && $_ <= INT32_MAX} ($marshalledBattleStatus,$marshalledColor))
              && length($aiDll) && length($aiDll) < 50);
   my $bId=$r_userInfo->{battle};
@@ -2352,7 +2388,7 @@ sub hRemoveBot {
   my ($self,$hdl,$r_connInfo,$login,$r_userInfo,$r_cmd,$cmdId)=@_;
   my $botName=$r_cmd->[1];
   return closeClientConnection($self,$hdl,'protocol error','invalid REMOVEBOT parameter')
-      unless($botName =~ REGEX_USERNAME);
+      unless($botName =~ REGEX_AIBOTNAME);
   my $bId=$r_userInfo->{battle};
   return unless(defined $bId);
   my $r_b=$self->{battles}{$bId};
@@ -2365,7 +2401,7 @@ sub hUpdateBot {
   my ($self,$hdl,$r_connInfo,$login,$r_userInfo,$r_cmd,$cmdId)=@_;
   my (undef,$botName,$marshalledBattleStatus,$marshalledColor)=@{$r_cmd};
   return closeClientConnection($self,$hdl,'protocol error','invalid UPDATEBOT parameter')
-      unless($botName =~ REGEX_USERNAME
+      unless($botName =~ REGEX_AIBOTNAME
              && (all {$_ =~ REGEX_INT32 && $_ >= INT32_MIN && $_ <= INT32_MAX} ($marshalledBattleStatus,$marshalledColor)));
   my $bId=$r_userInfo->{battle};
   return unless(defined $bId);
@@ -2616,7 +2652,7 @@ sub hSayBattle {
   my ($self,$hdl,$r_connInfo,$login,$r_userInfo,$r_cmd,$cmdId)=@_;
   my ($cmd,$msg)=@{$r_cmd};
   return closeClientConnection($self,$hdl,'protocol error',"invalid $cmd parameter")
-      unless(length($msg) <= $self->{maxChatMsgLength});
+      unless(length($msg) <= $self->{maxChatMsgLength} && $msg ne '');
   my $bId=$r_userInfo->{battle};
   return sendClient($self,$hdl,['SERVERMSG','Cannot send message in battle lobby: not in a battle!'],$cmdId)
       unless(defined $bId);
@@ -2639,7 +2675,7 @@ sub hSayBattlePrivate {
   my @recipients=split(',',$recipientsStr);
   return closeClientConnection($self,$hdl,'protocol error',"invalid $cmd parameter")
       unless((all {$_ =~ REGEX_USERNAME} @recipients)
-             && length($msg) <= $self->{maxChatMsgLength});
+             && length($msg) <= $self->{maxChatMsgLength} && $msg ne '');
   my $bId=$r_userInfo->{battle};
   return sendClient($self,$hdl,['SERVERMSG',"Cannot send private message to $recipientsStr in battle lobby: not in a battle!"],$cmdId)
       unless(defined $bId);
