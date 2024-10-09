@@ -54,7 +54,7 @@
 # onChannelJoin:
 # -------------
 #   Parameters:
-#     $r_connInfo,$login,$r_userInfo,$channel
+#     $r_connInfo,$login,$r_userInfo,$channel[,$password]
 #   Return value:
 #     $denyMsg (undef if allowed)
 ########################################
@@ -227,7 +227,7 @@ use Socket qw'unpack_sockaddr_in inet_ntoa';
 use RsaCertPem 'getPemCertificate';
 use SpringLobbyProtocol qw':server :regex :int32';
 
-our $VERSION='0.14';
+our $VERSION='0.15';
 
 use constant {
   IP_ADDR_LOOPBACK => 0,
@@ -1467,13 +1467,7 @@ sub hLogin {
     compFlags => \%compFlagsHash,
     channels => {},
     battle => undef,
-    status => {
-      inGame => 0,
-      rank => 0,
-      away => 0,
-      access => 0,
-      bot => 0,
-    },
+    status => DEFAULT_CLIENTSTATUS,
     accountId => 0,
     pendingAgreement => [],
     accessLevel => 1,
@@ -1963,12 +1957,14 @@ sub hChannels {
 
 sub hJoin {
   my ($self,$hdl,$r_connInfo,$login,$r_userInfo,$r_cmd,$cmdId)=@_;
-  my $chan=$r_cmd->[1];
-  return closeClientConnection($self,$hdl,'protocol error','invalid JOIN parameter') unless($chan =~ REGEX_CHANNEL);
+  my (undef,$chan,$password)=@{$r_cmd};
+  return closeClientConnection($self,$hdl,'protocol error','invalid JOIN parameter')
+      unless($chan =~ REGEX_CHANNEL
+             && (! defined $password || length($password) < 50));
   return if(exists $r_userInfo->{channels}{$chan});
   return sendClient($self,$hdl,['JOINFAILED',$chan,'invalid channel name'],$cmdId) if(substr($chan,0,2) eq '__');
   if(defined $self->{onChannelJoin}) {
-    my $denyMsg=$self->{onChannelJoin}($r_connInfo,$login,$r_userInfo,$chan);
+    my $denyMsg=$self->{onChannelJoin}($r_connInfo,$login,$r_userInfo,$chan,$password);
     return sendClient($self,$hdl,['JOINFAILED',$chan,$denyMsg],$cmdId) if(defined $denyMsg);
   }
   my @inducedTraffic=sendClient($self,$hdl,['JOIN',$chan],$cmdId);
@@ -2142,21 +2138,9 @@ sub hOpenBattle {
     locked => 0,
     users => {
       $login => {
-        battleStatus => {
-          side => 0,
-          sync => 0,
-          bonus => 0,
-          mode => 0,
-          team => 0,
-          id => 0,
-          ready => 0,
-        },
+        battleStatus => DEFAULT_CLIENTBATTLESTATUS,
         marshalledBattleStatus => 0,
-        color => {
-          red => 0,
-          green => 0,
-          blue => 0,
-        },
+        color => DEFAULT_TEAMCOLOR,
         marshalledColor => 0,
       },
     },
@@ -2236,21 +2220,9 @@ sub hJoinBattleAccept {
   delete $r_joiningUserInfo->{pendingBattleJoin};
   $r_joiningUserInfo->{battle}=$bId;
   $r_b->{users}{$joiningUser} = {
-    battleStatus => {
-      side => 0,
-      sync => 0,
-      bonus => 0,
-      mode => 0,
-      team => 0,
-      id => 0,
-      ready => 0,
-    },
+    battleStatus => DEFAULT_CLIENTBATTLESTATUS,
     marshalledBattleStatus => 0,
-    color => {
-      red => 0,
-      green => 0,
-      blue => 0,
-    },
+    color => DEFAULT_TEAMCOLOR,
     marshalledColor => 0,
   };
   my @joinResCmds;
@@ -2260,7 +2232,7 @@ sub hJoinBattleAccept {
     push(@joinResCmds,['CLIENTBATTLESTATUS',$_,$r_b->{users}{$_}{marshalledBattleStatus},$r_b->{users}{$_}{marshalledColor}])
         if($r_b->{users}{$_}{marshalledBattleStatus} || $r_b->{users}{$_}{marshalledColor})
   } (keys %{$r_b->{users}});
-  map {push(@joinResCmds,['ADDBOT',$bId,$_,$r_b->{bots}{$_}{owner},$r_b->{bots}{$_}{marshalledBattleStatus},$r_b->{bots}{$_}{marshalledColor},$r_b->{bots}{$_}{aiDll}])} (keys %{$r_b->{bots}});
+  map {push(@joinResCmds,['ADDBOT',$bId,$_,$r_b->{bots}{$_}{owner},$r_b->{bots}{$_}{marshalledBattleStatus},$r_b->{bots}{$_}{marshalledColor},$r_b->{bots}{$_}{aiName}])} (keys %{$r_b->{bots}});
   map {push(@joinResCmds,['ADDSTARTRECT',$_,@{$r_b->{startRects}{$_}}{qw'left top right bottom'}])} (sort {$a <=> $b} keys %{$r_b->{startRects}});
   push(@joinResCmds,['REQUESTBATTLESTATUS']);
   addInducedTraffic(\@inducedTraffic,sendClientMultiByIdx($self,$joiningUserConnIdx,\@joinResCmds));
@@ -2362,11 +2334,11 @@ sub hMyBattleStatus {
 
 sub hAddBot {
   my ($self,$hdl,$r_connInfo,$login,$r_userInfo,$r_cmd,$cmdId)=@_;
-  my (undef,$botName,$marshalledBattleStatus,$marshalledColor,$aiDll)=@{$r_cmd};
+  my (undef,$botName,$marshalledBattleStatus,$marshalledColor,$aiName)=@{$r_cmd};
   return closeClientConnection($self,$hdl,'protocol error','invalid ADDBOT parameter')
       unless($botName =~ REGEX_AIBOTNAME
              && (all {$_ =~ REGEX_INT32 && $_ >= INT32_MIN && $_ <= INT32_MAX} ($marshalledBattleStatus,$marshalledColor))
-             && length($aiDll) && length($aiDll) < 50);
+             && length($aiName) && length($aiName) < 50);
   my $bId=$r_userInfo->{battle};
   return unless(defined $bId);
   my $r_b=$self->{battles}{$bId};
@@ -2379,9 +2351,9 @@ sub hAddBot {
     marshalledBattleStatus => $self->{marshallBattleStatusFunc}($r_bs),
     color => $r_c,
     marshalledColor => marshallColor($r_c),
-    aiDll => $aiDll,
+    aiName => $aiName,
   };
-  return broadcastBattle($self,$bId,'ADDBOT',$bId,$botName,$login,$r_b->{bots}{$botName}{marshalledBattleStatus},$r_b->{bots}{$botName}{marshalledColor},$aiDll);
+  return broadcastBattle($self,$bId,'ADDBOT',$bId,$botName,$login,$r_b->{bots}{$botName}{marshalledBattleStatus},$r_b->{bots}{$botName}{marshalledColor},$aiName);
 }
 
 sub hRemoveBot {

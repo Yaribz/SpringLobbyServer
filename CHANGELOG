@@ -9,3 +9,6 @@ SpringLobbyServer.pm:
       reject chat commands with empty message
       do not send empty SETSCRIPTTAGS command to users joining a battle containing no script tag
       new log/debug parameters to filter log writing by domain
+0.15: fix "JOIN" command password parameter not checked and not passed to the "onChannelJoin" callback
+      use DEFAULT_CLIENTSTATUS, DEFAULT_CLIENTBATTLESTATUS and DEFAULT_TEAMCOLOR constants from SpringLobbyProtocol module insted of hardcoded values
+      rename "aiDll" field to "aiName"
