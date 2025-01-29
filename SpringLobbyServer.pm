@@ -5,7 +5,7 @@
 # operations (persistency, authentications etc.) must be implemented through
 # callbacks.
 #
-# Copyright (C) 2024  Yann Riou <yaribzh@gmail.com>
+# Copyright (C) 2025  Yann Riou <yaribzh@gmail.com>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as published by
@@ -227,7 +227,7 @@ use Socket qw'unpack_sockaddr_in inet_ntoa';
 use RsaCertPem 'getPemCertificate';
 use SpringLobbyProtocol qw':server :regex :int32';
 
-our $VERSION='0.15';
+our $VERSION='0.16';
 
 use constant {
   IP_ADDR_LOOPBACK => 0,
@@ -252,6 +252,7 @@ our %DEFAULT_PARAMS=(
   engineVersion => '*',
   natHelperPort => '8201', # (unimplemented)
   serverMode => SRV_MODE_LAN,
+  redirect => [],
   accessFlagLevel => 100, # access level required to get lobby moderator/admin access flag (0: disable automatic lobby access flag based on access level)
   defaultCountryCode => '??',
   readTimeout => 45,
@@ -491,6 +492,7 @@ sub new {
       if($self->{serverMode} != SRV_MODE_LAN && ! defined $self->{registrationSvc} && ! defined $self->{registrationSvcAsync});
   
   $self->{banner} = join(' ',@{$self}{qw'serverBannerCommand protocolVersion engineVersion natHelperPort serverMode'})."\cJ";
+  $self->{redirectCommand} = join(' ','REDIRECT',$self->{redirect}[0],$self->{redirect}[1]//())."\cJ" if(@{$self->{redirect}});
 
   my %protocolExtensions=%DEFAULT_LOBBY_PROTOCOL_EXTENSIONS;
   if(defined $self->{protocolExtensions}) {
@@ -697,6 +699,10 @@ sub allowedNewClientConnection {
     $r_connInfo->{loginTimeout}=AE::timer($self->{unauthentConnTimeout},0,sub {return if($hdl->destroyed()); closeClientConnection($weakSelf,$hdl,'login timeout',undef,1)}) if($self->{unauthentConnTimeout});
     $r_connInfo->{inputRateCounters}=[undef,undef];
     $self->{connections}{$connIdx}=$r_connInfo;
+    if(defined $self->{redirectCommand}) {
+      $hdl->push_write($self->{redirectCommand});
+      return closeClientConnection($self,$hdl,'redirection',undef,1,1);
+    }
     $hdl->push_write($self->{banner});
   }else{
     $self->{logger}("Failed to accept client connection from [$r_connInfo->{host}:$r_connInfo->{port}]: $!",1);
