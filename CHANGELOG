@@ -13,3 +13,10 @@ SpringLobbyServer.pm:
       use DEFAULT_CLIENTSTATUS, DEFAULT_CLIENTBATTLESTATUS and DEFAULT_TEAMCOLOR constants from SpringLobbyProtocol module insted of hardcoded values
       rename "aiDll" field to "aiName"
 0.16: add support for "redirect" mode
+0.17: always send client battle status response to command originator for MYBATTLESTATUS, UPDATEBOT, FORCETEAMNO and FORCEALLYNO commands (even if command has no effect)
+      do not send response to battle founders using TASClient for DISABLEUNIT, ENABLEUNITS, ENABLEALLUNITS, ADDSTARTRECT and REMOVESTARTRECT commands (behavior of legacy lobby server)
+      auto send REMOVESTARTRECT command before ADDSTARTRECT command to clients using TASClient when an existing start area is replaced
+      send lobby protocol extensions message to all clients except TASClient, Chobby, SpringLobby and Skylobby (was only sent to SPADS previously)
+      send start areas data just after disabled units list upon battle lobby join (i.e. before the list of client battle status)
+      improve code style for some broadcast functions (broadcastChannelLegacy, broadcastBattle, broadcastBattleUFlag)
+      fix case of a handler name

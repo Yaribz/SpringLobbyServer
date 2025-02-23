@@ -227,7 +227,7 @@ use Socket qw'unpack_sockaddr_in inet_ntoa';
 use RsaCertPem 'getPemCertificate';
 use SpringLobbyProtocol qw':server :regex :int32';
 
-our $VERSION='0.16';
+our $VERSION='0.17';
 
 use constant {
   IP_ADDR_LOOPBACK => 0,
@@ -418,7 +418,7 @@ our %CMDS=(
   HANDICAP => [1,\&hHandicap],
   FORCETEAMCOLOR => [1,\&hForceTeamColor],
   SETSCRIPTTAGS => [1,\&hSetScriptTags],
-  REMOVESCRIPTTAGS => [1,\&hRemoveSCriptTags],
+  REMOVESCRIPTTAGS => [1,\&hRemoveScriptTags],
   DISABLEUNITS => [1,\&hDisableUnits],
   ENABLEUNITS => [1,\&hEnableUnits],
   ENABLEALLUNITS => [1,\&hEnableAllUnits],
@@ -1156,9 +1156,9 @@ sub broadcastChannel {
 }
 
 sub broadcastChannelLegacy {
-  my ($self,$chan)=(shift,shift);
+  my ($self,$chan,$r_cmd,$r_legacyCmd)=@_;
   if(exists $self->{channels}{$chan}) {
-    my ($mCmd,$mCmdLegacy)=(marshallServerCommand($_[0]),marshallServerCommand($_[1]));
+    my ($mCmd,$mCmdLegacy)=(marshallServerCommand($r_cmd),marshallServerCommand($r_legacyCmd));
     my ($nbCmds,$nbCmdsLegacy)=(0,0);
     foreach my $userName (keys %{$self->{channels}{$chan}}) {
       if($self->{users}{$userName}{isLegacyClient}) {
@@ -1178,14 +1178,36 @@ sub broadcastChannelLegacy {
 sub broadcastBattle {
   my ($self,$bId)=(shift,shift);
   my $mCmd=marshallServerCommand(\@_);
-  map {sendUserMarshalled($self,$_,\$mCmd)} (keys %{$self->{battles}{$bId}{users}});
-  my $nbCmdsSent=keys %{$self->{battles}{$bId}{users}};
+  my @battleUsers = keys %{$self->{battles}{$bId}{users}};
+  sendUserMarshalled($self,$_,\$mCmd) foreach(@battleUsers);
+  my $nbCmdsSent=@battleUsers;
+  return ($nbCmdsSent,$nbCmdsSent*length($mCmd));
+}
+
+sub broadcastBattleExceptFounder {
+  my ($self,$bId)=(shift,shift);
+  my $mCmd=marshallServerCommand(\@_);
+  my $r_battleData=$self->{battles}{$bId};
+  my $founder=$r_battleData->{founder};
+  my @battleUsers = grep {$_ ne $founder} (keys %{$r_battleData->{users}});
+  sendUserMarshalled($self,$_,\$mCmd) foreach(@battleUsers);
+  my $nbCmdsSent=@battleUsers;
+  return ($nbCmdsSent,$nbCmdsSent*length($mCmd));
+}
+
+sub broadcastBattleLegacyOnly {
+  my ($self,$bId)=(shift,shift);
+  my @legacyBattleUsers = grep {$self->{users}{$_}{isLegacyClient}} (keys %{$self->{battles}{$bId}{users}});
+  return (0,0) unless(@legacyBattleUsers);
+  my $mCmd=marshallServerCommand(\@_);
+  sendUserMarshalled($self,$_,\$mCmd) foreach(@legacyBattleUsers);
+  my $nbCmdsSent=@legacyBattleUsers;
   return ($nbCmdsSent,$nbCmdsSent*length($mCmd));
 }
 
 sub broadcastBattleUFlag {
-  my ($self,$bId)=(shift,shift);
-  my ($mCmdUFlag,$mCmd)=(marshallServerCommand($_[0]),marshallServerCommand($_[1]));
+  my ($self,$bId,$r_uFlagCmd,$r_cmd)=@_;
+  my ($mCmdUFlag,$mCmd)=(marshallServerCommand($r_uFlagCmd),marshallServerCommand($r_cmd));
   my ($nbCmdsUFlag,$nbCmds)=(0,0);
   foreach my $userName (keys %{$self->{battles}{$bId}{users}}) {
     if($self->{users}{$userName}{compFlags}{u}) {
@@ -1638,8 +1660,13 @@ sub hLogin_allowed {
   $self->{accounts}{$accountId}=$userName if($accountId);
   $self->{lcUsers}{$lcUserName}=$userName;
   my @loginInfoCmds;
-  push(@loginInfoCmds,['SERVERMSG',$self->{srvMsgProtocolExtensions}])
-      if(exists $self->{srvMsgProtocolExtensions} && length($r_userInfo->{lobbyClient}) > 6 && substr($r_userInfo->{lobbyClient},0,7) eq 'SPADS v');
+  if(exists $self->{srvMsgProtocolExtensions} && ! $r_userInfo->{isLegacyClient}) {
+    my $lobbyClient=$r_userInfo->{lobbyClient};
+    push(@loginInfoCmds,['SERVERMSG',$self->{srvMsgProtocolExtensions}])
+        unless(substr($lobbyClient,0,16) eq 'LuaLobby Chobby:'
+               || substr($lobbyClient,0,12) eq 'SpringLobby '
+               || substr($lobbyClient,0,9) eq 'skylobby-');
+  }
   my @motd;
   @motd=@{$self->{motd}} if(defined $self->{motd});
   $self->{onMotd}($r_connInfo,$userName,$r_userInfo,\@motd)
@@ -2234,12 +2261,12 @@ sub hJoinBattleAccept {
   my @joinResCmds;
   push(@joinResCmds,['SETSCRIPTTAGS',map {$_.'='.$r_b->{scriptTags}{$_}} (keys %{$r_b->{scriptTags}})]) if(%{$r_b->{scriptTags}});
   push(@joinResCmds,['DISABLEUNITS',keys %{$r_b->{disabledUnits}}]) if(%{$r_b->{disabledUnits}});
+  push(@joinResCmds,['ADDSTARTRECT',$_,@{$r_b->{startRects}{$_}}{qw'left top right bottom'}]) foreach(sort {$a <=> $b} keys %{$r_b->{startRects}});
   map {
     push(@joinResCmds,['CLIENTBATTLESTATUS',$_,$r_b->{users}{$_}{marshalledBattleStatus},$r_b->{users}{$_}{marshalledColor}])
         if($r_b->{users}{$_}{marshalledBattleStatus} || $r_b->{users}{$_}{marshalledColor})
   } (keys %{$r_b->{users}});
   map {push(@joinResCmds,['ADDBOT',$bId,$_,$r_b->{bots}{$_}{owner},$r_b->{bots}{$_}{marshalledBattleStatus},$r_b->{bots}{$_}{marshalledColor},$r_b->{bots}{$_}{aiName}])} (keys %{$r_b->{bots}});
-  map {push(@joinResCmds,['ADDSTARTRECT',$_,@{$r_b->{startRects}{$_}}{qw'left top right bottom'}])} (sort {$a <=> $b} keys %{$r_b->{startRects}});
   push(@joinResCmds,['REQUESTBATTLESTATUS']);
   addInducedTraffic(\@inducedTraffic,sendClientMultiByIdx($self,$joiningUserConnIdx,\@joinResCmds));
   closeClientConnection($self,$self->{connections}{$joiningUserConnIdx}{hdl},'induced traffic flood')
@@ -2334,8 +2361,12 @@ sub hMyBattleStatus {
     $r_bu->{color}=$r_c;
     $r_bu->{marshalledColor}=marshallColor($r_c); # always remarshall to enforce unused bits = 0
   }
-  return broadcastBattle($self,$bId,'CLIENTBATTLESTATUS',$login,$r_bu->{marshalledBattleStatus},$r_bu->{marshalledColor}) if($commandIsEffective);
-  return;
+  my @cbsCmd=('CLIENTBATTLESTATUS',$login,$r_bu->{marshalledBattleStatus},$r_bu->{marshalledColor});
+  if($commandIsEffective) {
+    return broadcastBattle($self,$bId,@cbsCmd);
+  }else{
+    return sendClient($self,$hdl,\@cbsCmd);
+  }
 }
 
 sub hAddBot {
@@ -2398,8 +2429,12 @@ sub hUpdateBot {
     $r_bb->{color}=$r_c;
     $r_bb->{marshalledColor}=marshallColor($r_c); # always remarshall to enforce unused bits = 0
   }
-  return broadcastBattle($self,$bId,'UPDATEBOT',$bId,$botName,$r_bb->{marshalledBattleStatus},$r_bb->{marshalledColor}) if($commandIsEffective);
-  return;
+  my @updateBotCmd=('UPDATEBOT',$bId,$botName,$r_bb->{marshalledBattleStatus},$r_bb->{marshalledColor});
+  if($commandIsEffective) {
+    return broadcastBattle($self,$bId,@updateBotCmd);
+  }else{
+    return sendClient($self,$hdl,\@updateBotCmd);
+  }
 }
 
 sub hForceSpectatorMode {
@@ -2427,10 +2462,19 @@ sub hForceTeamNo {
   return unless(defined $bId);
   my $r_b=$self->{battles}{$bId};
   my $r_bu=$r_b->{users}{$forcedUser};
-  return unless($r_b->{founder} eq $login && defined $r_bu && $r_bu->{battleStatus}{id} != $teamNb);
-  $r_bu->{battleStatus}{id}=$teamNb;
-  $r_bu->{marshalledBattleStatus}=$self->{marshallBattleStatusFunc}($r_bu->{battleStatus});
-  return broadcastBattle($self,$bId,'CLIENTBATTLESTATUS',$forcedUser,$r_bu->{marshalledBattleStatus},$r_bu->{marshalledColor});
+  return unless($r_b->{founder} eq $login && defined $r_bu);
+  my $commandIsEffective;
+  if($r_bu->{battleStatus}{id} != $teamNb) {
+    $commandIsEffective=1;
+    $r_bu->{battleStatus}{id}=$teamNb;
+    $r_bu->{marshalledBattleStatus}=$self->{marshallBattleStatusFunc}($r_bu->{battleStatus});
+  }
+  my @cbsCmd=('CLIENTBATTLESTATUS',$forcedUser,$r_bu->{marshalledBattleStatus},$r_bu->{marshalledColor});
+  if($commandIsEffective) {
+    return broadcastBattle($self,$bId,@cbsCmd);
+  }else{
+    return sendClient($self,$hdl,\@cbsCmd);
+  }
 }
 
 sub hForceAllyNo {
@@ -2443,10 +2487,19 @@ sub hForceAllyNo {
   return unless(defined $bId);
   my $r_b=$self->{battles}{$bId};
   my $r_bu=$r_b->{users}{$forcedUser};
-  return unless($r_b->{founder} eq $login && defined $r_bu && $r_bu->{battleStatus}{team} != $teamNb);
-  $r_bu->{battleStatus}{team}=$teamNb;
-  $r_bu->{marshalledBattleStatus}=$self->{marshallBattleStatusFunc}($r_bu->{battleStatus});
-  return broadcastBattle($self,$bId,'CLIENTBATTLESTATUS',$forcedUser,$r_bu->{marshalledBattleStatus},$r_bu->{marshalledColor});
+  return unless($r_b->{founder} eq $login && defined $r_bu);
+  my $commandIsEffective;
+  if($r_bu->{battleStatus}{team} != $teamNb) {
+    $commandIsEffective=1;
+    $r_bu->{battleStatus}{team}=$teamNb;
+    $r_bu->{marshalledBattleStatus}=$self->{marshallBattleStatusFunc}($r_bu->{battleStatus});
+  }
+  my @cbsCmd=('CLIENTBATTLESTATUS',$forcedUser,$r_bu->{marshalledBattleStatus},$r_bu->{marshalledColor});
+  if($commandIsEffective) {
+    return broadcastBattle($self,$bId,@cbsCmd);
+  }else{
+    return sendClient($self,$hdl,\@cbsCmd);
+  }
 }
 
 sub hHandicap {
@@ -2517,7 +2570,7 @@ sub hSetScriptTags {
   return broadcastBattle($self,$bId,'SETSCRIPTTAGS',map {$_.'='.$scriptTags{$_}} @changedScriptTags);
 }
 
-sub hRemoveSCriptTags {
+sub hRemoveScriptTags {
   my ($self,$hdl,$r_connInfo,$login,$r_userInfo,$r_cmd,$cmdId)=@_;
   my (undef,@scriptTags)=@{$r_cmd};
   return closeClientConnection($self,$hdl,'protocol error','invalid REMOVESCRIPTTAGS parameter')
@@ -2542,7 +2595,8 @@ sub hDisableUnits {
   my @unitsToDisable=grep {! exists $r_b->{disabledUnits}{$_}} @units;
   return unless(@unitsToDisable);
   map {$r_b->{disabledUnits}{$_}=1} @unitsToDisable;
-  return broadcastBattle($self,$bId,'DISABLEUNITS',@unitsToDisable);
+  my $r_broadcastFunc = $self->{users}{$login}{isLegacyClient} ? \&broadcastBattleExceptFounder : \&broadcastBattle;
+  return $r_broadcastFunc->($self,$bId,'DISABLEUNITS',@unitsToDisable);
 }
 
 sub hEnableUnits {
@@ -2557,7 +2611,8 @@ sub hEnableUnits {
   my @unitsToEnable=grep {exists $r_b->{disabledUnits}{$_}} @units;
   return unless(@unitsToEnable);
   map {delete $r_b->{disabledUnits}{$_}} @unitsToEnable;
-  return broadcastBattle($self,$bId,'ENABLEUNITS',@unitsToEnable);
+  my $r_broadcastFunc = $self->{users}{$login}{isLegacyClient} ? \&broadcastBattleExceptFounder : \&broadcastBattle;
+  return $r_broadcastFunc->($self,$bId,'ENABLEUNITS',@unitsToEnable);
 }
 
 sub hEnableAllUnits {
@@ -2567,7 +2622,8 @@ sub hEnableAllUnits {
   my $r_b=$self->{battles}{$bId};
   return unless($r_b->{founder} eq $login && %{$r_b->{disabledUnits}});
   $r_b->{disabledUnits}={};
-  return broadcastBattle($self,$bId,'ENABLEALLUNITS');
+  my $r_broadcastFunc = $self->{users}{$login}{isLegacyClient} ? \&broadcastBattleExceptFounder : \&broadcastBattle;
+  return $r_broadcastFunc->($self,$bId,'ENABLEALLUNITS');
 }
 
 sub hUpdateBattleInfo {
@@ -2604,13 +2660,18 @@ sub hAddStartRect {
   return unless(defined $bId);
   my $r_b=$self->{battles}{$bId};
   return unless($r_b->{founder} eq $login);
-  return if(exists $r_b->{startRects}{$team}
-            && $r_b->{startRects}{$team}{left} == $left
-            && $r_b->{startRects}{$team}{top} == $top
-            && $r_b->{startRects}{$team}{right} == $right
-            && $r_b->{startRects}{$team}{bottom} == $bottom);
+  my @inducedTraffic=(0,0);
+  if(exists $r_b->{startRects}{$team}) {
+    return if($r_b->{startRects}{$team}{left} == $left
+              && $r_b->{startRects}{$team}{top} == $top
+              && $r_b->{startRects}{$team}{right} == $right
+              && $r_b->{startRects}{$team}{bottom} == $bottom);
+    addInducedTraffic(\@inducedTraffic,broadcastBattleLegacyOnly($self,$bId,'REMOVESTARTRECT',$team));
+  }
   $r_b->{startRects}{$team}={left => $left, top => $top, right => $right, bottom => $bottom};
-  return broadcastBattle($self,$bId,'ADDSTARTRECT',$team,$left,$top,$right,$bottom);
+  my $r_broadcastFunc = $self->{users}{$login}{isLegacyClient} ? \&broadcastBattleExceptFounder : \&broadcastBattle;
+  addInducedTraffic(\@inducedTraffic,$r_broadcastFunc->($self,$bId,'ADDSTARTRECT',$team,$left,$top,$right,$bottom));
+  return @inducedTraffic;
 }
 
 sub hRemoveStartRect {
@@ -2623,7 +2684,8 @@ sub hRemoveStartRect {
   my $r_b=$self->{battles}{$bId};
   return unless($r_b->{founder} eq $login && exists $r_b->{startRects}{$team});
   delete $r_b->{startRects}{$team};
-  return broadcastBattle($self,$bId,'REMOVESTARTRECT',$team);
+  my $r_broadcastFunc = $self->{users}{$login}{isLegacyClient} ? \&broadcastBattleExceptFounder : \&broadcastBattle;
+  return $r_broadcastFunc->($self,$bId,'REMOVESTARTRECT',$team);
 }
 
 sub hSayBattle {
