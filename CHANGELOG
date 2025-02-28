@@ -20,3 +20,4 @@ SpringLobbyServer.pm:
       send start areas data just after disabled units list upon battle lobby join (i.e. before the list of client battle status)
       improve code style for some broadcast functions (broadcastChannelLegacy, broadcastBattle, broadcastBattleUFlag)
       fix case of a handler name
+0.18: add support for lobby clients that do not use the 'b' compatibility flag (fix battles opened with SpringLobby clients not being joinable by anyone)

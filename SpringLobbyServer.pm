@@ -227,7 +227,7 @@ use Socket qw'unpack_sockaddr_in inet_ntoa';
 use RsaCertPem 'getPemCertificate';
 use SpringLobbyProtocol qw':server :regex :int32';
 
-our $VERSION='0.17';
+our $VERSION='0.18';
 
 use constant {
   IP_ADDR_LOOPBACK => 0,
@@ -2215,20 +2215,51 @@ sub hJoinBattle {
     $bId =~ REGEX_BATTLEID
     && length($password) < 50
     && $scriptPassword =~ REGEX_SCRIPTPASSWD);
-  return sendClient($self,$hdl,['JOINBATTLEFAILED','invalid battle ID'],$cmdId) unless(exists $self->{battles}{$bId});
-  return sendClient($self,$hdl,['JOINBATTLEFAILED','battle is locked'],$cmdId) if($self->{battles}{$bId}{locked});
-  if($self->{battles}{$bId}{password} ne '') {
+  my $r_b=$self->{battles}{$bId};
+  return sendClient($self,$hdl,['JOINBATTLEFAILED','invalid battle ID'],$cmdId) unless(defined $r_b);
+  return sendClient($self,$hdl,['JOINBATTLEFAILED','battle is locked'],$cmdId) if($r_b->{locked});
+  if($r_b->{password} ne '') {
     return sendClient($self,$hdl,['JOINBATTLEFAILED','battle is password protected'],$cmdId) if($password eq '');
-    return sendClient($self,$hdl,['JOINBATTLEFAILED','invalid password'],$cmdId) if($password ne $self->{battles}{$bId}{password});
+    return sendClient($self,$hdl,['JOINBATTLEFAILED','invalid password'],$cmdId) if($password ne $r_b->{password});
   }
   return sendClient($self,$hdl,['JOINBATTLEFAILED','already in a battle'],$cmdId) if(defined $r_userInfo->{battle});
-  my $battleFounder=$self->{battles}{$bId}{founder};
+  my $battleFounder=$r_b->{founder};
+  my $r_battleFounderInfo=$self->{users}{$battleFounder};
   if(defined $self->{onBattleJoin}) {
-    my $denyMsg=$self->{onBattleJoin}($r_connInfo,$login,$r_userInfo,$battleFounder,$self->{users}{$battleFounder},$bId);
+    my $denyMsg=$self->{onBattleJoin}($r_connInfo,$login,$r_userInfo,$battleFounder,$r_battleFounderInfo,$bId);
     return sendClient($self,$hdl,['JOINBATTLEFAILED',$denyMsg],$cmdId) if(defined $denyMsg);
   }
-  $r_userInfo->{pendingBattleJoin}=[$bId,$scriptPassword];
-  return sendUser($self,$battleFounder,['JOINBATTLEREQUEST',$login,$r_connInfo->{host}]);
+  if($r_battleFounderInfo->{compFlags}{b}) {
+    $r_userInfo->{pendingBattleJoin}=[$bId,$scriptPassword];
+    return sendUser($self,$battleFounder,['JOINBATTLEREQUEST',$login,$r_connInfo->{host}]);
+  }
+  my $connIdx=$hdl->{connIdx};
+  my @inducedTraffic=sendClientMultiByIdx($self,$connIdx,[
+                                            ['JOINBATTLE',$bId,$r_b->{gameHash},$r_userInfo->{compFlags}{u} ? '__battle__'.$bId : ()],
+                                            ['JOINEDBATTLE',$bId,$login,$scriptPassword//()]
+                                          ]);
+  addInducedTraffic(\@inducedTraffic,sendUser($self,$battleFounder,['JOINEDBATTLE',$bId,$login,$scriptPassword//()]));
+  map {addInducedTraffic(\@inducedTraffic,sendUser($self,$_,['JOINEDBATTLE',$bId,$login])) unless($_ eq $login || $_ eq $battleFounder)} (keys %{$self->{users}});
+  delete $r_userInfo->{pendingBattleJoin};
+  $r_userInfo->{battle}=$bId;
+  $r_b->{users}{$login} = {
+    battleStatus => DEFAULT_CLIENTBATTLESTATUS,
+    marshalledBattleStatus => 0,
+    color => DEFAULT_TEAMCOLOR,
+    marshalledColor => 0,
+  };
+  my @joinResCmds;
+  push(@joinResCmds,['SETSCRIPTTAGS',map {$_.'='.$r_b->{scriptTags}{$_}} (keys %{$r_b->{scriptTags}})]) if(%{$r_b->{scriptTags}});
+  push(@joinResCmds,['DISABLEUNITS',keys %{$r_b->{disabledUnits}}]) if(%{$r_b->{disabledUnits}});
+  push(@joinResCmds,['ADDSTARTRECT',$_,@{$r_b->{startRects}{$_}}{qw'left top right bottom'}]) foreach(sort {$a <=> $b} keys %{$r_b->{startRects}});
+  map {
+    push(@joinResCmds,['CLIENTBATTLESTATUS',$_,$r_b->{users}{$_}{marshalledBattleStatus},$r_b->{users}{$_}{marshalledColor}])
+        if($r_b->{users}{$_}{marshalledBattleStatus} || $r_b->{users}{$_}{marshalledColor})
+  } (keys %{$r_b->{users}});
+  map {push(@joinResCmds,['ADDBOT',$bId,$_,$r_b->{bots}{$_}{owner},$r_b->{bots}{$_}{marshalledBattleStatus},$r_b->{bots}{$_}{marshalledColor},$r_b->{bots}{$_}{aiName}])} (keys %{$r_b->{bots}});
+  push(@joinResCmds,['REQUESTBATTLESTATUS']);
+  addInducedTraffic(\@inducedTraffic,sendClientMultiByIdx($self,$connIdx,\@joinResCmds));
+  return @inducedTraffic;
 }
 
 sub hJoinBattleAccept {
@@ -2243,12 +2274,13 @@ sub hJoinBattleAccept {
   my $r_joiningUserInfo=$self->{users}{$joiningUser};
   my $r_pendingJoinData=$r_joiningUserInfo->{pendingBattleJoin};
   return unless(defined $r_pendingJoinData && $r_pendingJoinData->[0] eq $bId);
+  my $scriptPassword=$r_pendingJoinData->[1];
   my $joiningUserConnIdx=$r_joiningUserInfo->{connIdx};
   my @inducedTraffic=sendClientMultiByIdx($self,$joiningUserConnIdx,[
                                             ['JOINBATTLE',$bId,$r_b->{gameHash},$r_joiningUserInfo->{compFlags}{u} ? '__battle__'.$bId : ()],
-                                            ['JOINEDBATTLE',$bId,$joiningUser,$r_pendingJoinData->[1]]
+                                            ['JOINEDBATTLE',$bId,$joiningUser,$scriptPassword//()]
                                           ]);
-  addInducedTraffic(\@inducedTraffic,sendClient($self,$hdl,['JOINEDBATTLE',$bId,$joiningUser,$r_pendingJoinData->[1]],$cmdId));
+  addInducedTraffic(\@inducedTraffic,sendClient($self,$hdl,['JOINEDBATTLE',$bId,$joiningUser,$scriptPassword//()],$cmdId));
   map {addInducedTraffic(\@inducedTraffic,sendUser($self,$_,['JOINEDBATTLE',$bId,$joiningUser])) unless($_ eq $login || $_ eq $joiningUser)} (keys %{$self->{users}});
   delete $r_joiningUserInfo->{pendingBattleJoin};
   $r_joiningUserInfo->{battle}=$bId;
