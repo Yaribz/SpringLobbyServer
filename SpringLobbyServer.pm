@@ -227,7 +227,7 @@ use Socket qw'unpack_sockaddr_in inet_ntoa';
 use RsaCertPem 'getPemCertificate';
 use SpringLobbyProtocol qw':server :regex :int32';
 
-our $VERSION='0.18';
+our $VERSION='0.19';
 
 use constant {
   IP_ADDR_LOOPBACK => 0,
@@ -239,6 +239,13 @@ use constant {
 
   CNT_CHECK_ONLY => 1,
   CNT_INCR_ONLY => 2,
+
+  CLI_TASCLIENT => 0,
+  CLI_SPRINGLOBBY => 1,
+  CLI_SPADS => 2,
+  CLI_CHOBBY => 3,
+  CLI_SKYLOBBY => 4,
+  CLI_OTHER => 5,
 };
 
 my @LOG_LEVELS=('[ CRITICAL ]','[ ERROR    ]','[ WARNING  ]','[ NOTICE   ]','[ INFO     ]','[ DEBUG    ]');
@@ -1482,6 +1489,20 @@ sub hLogin {
   }
   my %compFlagsHash;
   map {$compFlagsHash{$_}=1} split(/ /,$compFlags);
+  my $lobbyClientType;
+  if(substr($lobbyClient,0,9) eq 'TASClient') {
+    $lobbyClientType=CLI_TASCLIENT;
+  }elsif(substr($lobbyClient,0,12) eq 'SpringLobby ') {
+    $lobbyClientType=CLI_SPRINGLOBBY;
+  }elsif(substr($lobbyClient,0,6) eq 'SPADS ') {
+    $lobbyClientType=CLI_SPADS;
+  }elsif(substr($lobbyClient,0,16) eq 'LuaLobby Chobby:') {
+    $lobbyClientType=CLI_CHOBBY;
+  }elsif(substr($lobbyClient,0,9) eq 'skylobby-') {
+    $lobbyClientType=CLI_SKYLOBBY;
+  }else{
+    $lobbyClientType=CLI_OTHER;
+  }
   my $connIdx=$hdl->{connIdx};
   my %userInfo=(
     country => $r_connInfo->{country},
@@ -1490,6 +1511,8 @@ sub hLogin {
     cpu => $cpu,
     lanIpAddr => $lanIpAddr,
     lobbyClient => $lobbyClient,
+    lobbyClientType => $lobbyClientType,
+    isLegacyClient => $lobbyClientType == CLI_TASCLIENT,
     macAddressHash => $macAddressHash,
     systemHash => $systemHash,
     compFlags => \%compFlagsHash,
@@ -1507,7 +1530,6 @@ sub hLogin {
     friendAccounts => {},
     friendRequestsIn => {},
     friendRequestsOut => {},
-    isLegacyClient => substr($lobbyClient,0,9) eq 'TASClient',
     inducedTrafficRateCounters => [undef,undef],
     dbCmdCounters => [undef,undef],
     loginTime => $self->{netMsgRcvTime},
@@ -1660,13 +1682,9 @@ sub hLogin_allowed {
   $self->{accounts}{$accountId}=$userName if($accountId);
   $self->{lcUsers}{$lcUserName}=$userName;
   my @loginInfoCmds;
-  if(exists $self->{srvMsgProtocolExtensions} && ! $r_userInfo->{isLegacyClient}) {
-    my $lobbyClient=$r_userInfo->{lobbyClient};
-    push(@loginInfoCmds,['SERVERMSG',$self->{srvMsgProtocolExtensions}])
-        unless(substr($lobbyClient,0,16) eq 'LuaLobby Chobby:'
-               || substr($lobbyClient,0,12) eq 'SpringLobby '
-               || substr($lobbyClient,0,9) eq 'skylobby-');
-  }
+  push(@loginInfoCmds,['SERVERMSG',$self->{srvMsgProtocolExtensions}])
+      if(exists $self->{srvMsgProtocolExtensions}
+         && ($r_userInfo->{lobbyClientType} == CLI_SPADS || $r_userInfo->{lobbyClientType} == CLI_OTHER));
   my @motd;
   @motd=@{$self->{motd}} if(defined $self->{motd});
   $self->{onMotd}($r_connInfo,$userName,$r_userInfo,\@motd)
@@ -3195,12 +3213,12 @@ sub hIgnore {
       unless($userName =~ REGEX_USERNAME
              && (! defined $reason || length($reason) < 255));
   my $accountId=$r_userInfo->{accountId};
-  return sendClient($self,$hdl,['SERVERMSG','Cannot ignore account, feature requires accountId feature which is not supported by this server'],$cmdId)
+  return sendClient($self,$hdl,['SERVERMSG','Cannot ignore account, this requires accountId feature which is not supported by this server'],$cmdId)
       unless($accountId);
   my $ignoredAccountId;
   if(exists $self->{users}{$userName}) {
     $ignoredAccountId=$self->{users}{$userName}{accountId};
-    return sendClient($self,$hdl,['SERVERMSG','Cannot ignore account, feature requires accountId feature which is not fully supported by this server'],$cmdId)
+    return sendClient($self,$hdl,['SERVERMSG','Cannot ignore account, this requires accountId feature which is not fully supported by this server'],$cmdId)
         unless($ignoredAccountId);
     return sendClient($self,$hdl,['SERVERMSG','Failed to ignore '.$userName.': account is already ignored'],$cmdId)
         if(exists $r_userInfo->{ignoredAccounts}{$ignoredAccountId});
@@ -3267,12 +3285,12 @@ sub hUnignore {
   return closeClientConnection($self,$hdl,'protocol error','invalid UNIGNORE parameter')
       unless($userName =~ REGEX_USERNAME);
   my $accountId=$r_userInfo->{accountId};
-  return sendClient($self,$hdl,['SERVERMSG','Cannot unignore account, feature requires accountId feature which is not supported by this server'],$cmdId)
+  return sendClient($self,$hdl,['SERVERMSG','Cannot unignore account, this requires accountId feature which is not supported by this server'],$cmdId)
       unless($accountId);
   my $ignoredAccountId;
   if(exists $self->{users}{$userName}) {
     $ignoredAccountId=$self->{users}{$userName}{accountId};
-    return sendClient($self,$hdl,['SERVERMSG','Cannot unignore account, feature requires accountId feature which is not fully supported by this server'],$cmdId)
+    return sendClient($self,$hdl,['SERVERMSG','Cannot unignore account, this requires accountId feature which is not fully supported by this server'],$cmdId)
         unless($ignoredAccountId);
     return sendClient($self,$hdl,['SERVERMSG','Failed to unignore '.$userName.': account is not ignored'],$cmdId)
         unless(exists $r_userInfo->{ignoredAccounts}{$ignoredAccountId});
@@ -3373,12 +3391,12 @@ sub hFriendRequest {
   return sendClient($self,$hdl,['SERVERMSG','Cannot send friend request to yourself'],$cmdId)
       if($login eq $userName);
   my $accountId=$r_userInfo->{accountId};
-  return sendClient($self,$hdl,['SERVERMSG','Cannot send friend request, feature requires accountId feature which is not supported by this server'],$cmdId)
+  return sendClient($self,$hdl,['SERVERMSG','Cannot send friend request, this requires accountId feature which is not supported by this server'],$cmdId)
       unless($accountId);
   if(exists $self->{users}{$userName}) {
     my $r_friendUserInfo=$self->{users}{$userName};
     my $friendAccountId=$r_friendUserInfo->{accountId};
-    return sendClient($self,$hdl,['SERVERMSG','Cannot send friend request, feature requires accountId feature which is not fully supported by this server'],$cmdId)
+    return sendClient($self,$hdl,['SERVERMSG','Cannot send friend request, this requires accountId feature which is not fully supported by this server'],$cmdId)
         unless($friendAccountId);
     return sendClient($self,$hdl,['SERVERMSG','Failed to send friend request to '.$userName.': already friend'],$cmdId)
         if(exists $r_userInfo->{friendAccounts}{$friendAccountId});
@@ -3420,8 +3438,10 @@ sub hFriendRequest {
           $friendData{msg}=$msg if(defined $msg);
           $r_friendUserInfo->{friendRequestsIn}{$accountId}=\%friendData;
           my @tagParams=('userName='.$currentLogin);
-          push(@tagParams,'msg='.$msg) if(defined $msg);
-          push(@tagParams,'accountId='.$accountId);
+          if($r_friendUserInfo->{lobbyClientType} != CLI_SKYLOBBY) {
+            push(@tagParams,'msg='.$msg) if(defined $msg);
+            push(@tagParams,'accountId='.$accountId);
+          }
           @inducedTraffic=sendUser($self,$friendUserName,['FRIENDREQUEST',@tagParams]);
         }
         return if($hdl->destroyed());
@@ -3449,11 +3469,11 @@ sub hAcceptFriendRequest {
   return sendClient($self,$hdl,['SERVERMSG','Cannot accept friend request, feature is not supported by this server'],$cmdId)
       unless(exists $self->{friendSvc}{ACCEPTFRIENDREQUEST});
   my $accountId=$r_userInfo->{accountId};
-  return sendClient($self,$hdl,['SERVERMSG','Cannot accept friend request, feature requires accountId feature which is not supported by this server'],$cmdId)
+  return sendClient($self,$hdl,['SERVERMSG','Cannot accept friend request, this requires accountId feature which is not supported by this server'],$cmdId)
       unless($accountId);
   if(exists $self->{users}{$userName}) {
     my $friendAccountId=$self->{users}{$userName}{accountId};
-    return sendClient($self,$hdl,['SERVERMSG','Cannot accept friend request, feature requires accountId feature which is not fully supported by this server'],$cmdId)
+    return sendClient($self,$hdl,['SERVERMSG','Cannot accept friend request, this requires accountId feature which is not fully supported by this server'],$cmdId)
         unless($friendAccountId);
     return sendClient($self,$hdl,['SERVERMSG','Failed to accept friend request, no pending request from '.$userName],$cmdId)
         unless(exists $r_userInfo->{friendRequestsIn}{$friendAccountId});
@@ -3479,14 +3499,14 @@ sub hAcceptFriendRequest {
           delete $r_currentUserInfo->{friendRequestsIn}{$friendAccountId};
           if(! exists $r_currentUserInfo->{friendAccounts}{$friendAccountId}) {
             $r_currentUserInfo->{friendAccounts}{$friendAccountId}=$friendUserName;
-            @inducedTraffic=sendUser($self,$currentLogin,['FRIEND','userName='.$friendUserName,'accountId='.$friendAccountId]);
+            @inducedTraffic=sendUser($self,$currentLogin,['FRIEND','userName='.$friendUserName,$r_currentUserInfo->{lobbyClientType} == CLI_SKYLOBBY ? () : 'accountId='.$friendAccountId]);
           }
         }
         if(defined $r_friendUserInfo) {
           delete $r_friendUserInfo->{friendRequestsOut}{$accountId};
           if(! exists $r_friendUserInfo->{friendAccounts}{$accountId}) {
             $r_friendUserInfo->{friendAccounts}{$accountId}=$currentLogin;
-            addInducedTraffic(\@inducedTraffic,sendUser($self,$friendUserName,['FRIEND','userName='.$currentLogin,'accountId='.$accountId]));
+            addInducedTraffic(\@inducedTraffic,sendUser($self,$friendUserName,['FRIEND','userName='.$currentLogin,$r_friendUserInfo->{lobbyClientType} == CLI_SKYLOBBY ? () : 'accountId='.$accountId]));
           }
         }
         return if($hdl->destroyed());
@@ -3513,11 +3533,11 @@ sub hDeclineFriendRequest {
   return sendClient($self,$hdl,['SERVERMSG','Cannot decline friend request, feature is not supported by this server'],$cmdId)
       unless(exists $self->{friendSvc}{DECLINEFRIENDREQUEST});
   my $accountId=$r_userInfo->{accountId};
-  return sendClient($self,$hdl,['SERVERMSG','Cannot decline friend request, feature requires accountId feature which is not supported by this server'],$cmdId)
+  return sendClient($self,$hdl,['SERVERMSG','Cannot decline friend request, this requires accountId feature which is not supported by this server'],$cmdId)
       unless($accountId);
   if(exists $self->{users}{$userName}) {
     my $friendAccountId=$self->{users}{$userName}{accountId};
-    return sendClient($self,$hdl,['SERVERMSG','Cannot decline friend request, feature requires accountId feature which is not fully supported by this server'],$cmdId)
+    return sendClient($self,$hdl,['SERVERMSG','Cannot decline friend request, this requires accountId feature which is not fully supported by this server'],$cmdId)
         unless($friendAccountId);
     return sendClient($self,$hdl,['SERVERMSG','Failed to decline friend request, no pending request from '.$userName],$cmdId)
         unless(exists $r_userInfo->{friendRequestsIn}{$friendAccountId});
@@ -3561,11 +3581,11 @@ sub hUnfriend {
   return sendClient($self,$hdl,['SERVERMSG','Cannot unfriend, feature is not supported by this server'],$cmdId)
       unless(exists $self->{friendSvc}{UNFRIEND});
   my $accountId=$r_userInfo->{accountId};
-  return sendClient($self,$hdl,['SERVERMSG','Cannot unfriend, feature requires accountId feature which is not supported by this server'],$cmdId)
+  return sendClient($self,$hdl,['SERVERMSG','Cannot unfriend, this requires accountId feature which is not supported by this server'],$cmdId)
       unless($accountId);
   if(exists $self->{users}{$userName}) {
     my $friendAccountId=$self->{users}{$userName}{accountId};
-    return sendClient($self,$hdl,['SERVERMSG','Cannot unfriend, feature requires accountId feature which is not fully supported by this server'],$cmdId)
+    return sendClient($self,$hdl,['SERVERMSG','Cannot unfriend, this requires accountId feature which is not fully supported by this server'],$cmdId)
         unless($friendAccountId);
     return sendClient($self,$hdl,['SERVERMSG','Failed to unfriend, not friend with '.$userName],$cmdId)
         unless(exists $r_userInfo->{friendAccounts}{$friendAccountId});
@@ -3619,6 +3639,7 @@ sub hFriendRequestList {
       closeClientConnection($self,$hdl,'protocol error','invalid FRIENDREQUESTLIST parameter: type');
     }
   }
+  my $includeOptionalTagParams = $r_userInfo->{lobbyClientType} != CLI_SKYLOBBY;
   if(exists $self->{friendSvc}{FRIENDREQUESTLIST}) {
     $self->{friendSvc}{FRIENDREQUESTLIST}(
       sub {
@@ -3628,7 +3649,8 @@ sub hFriendRequestList {
         if(defined $r_friendRequestList) {
           foreach my $r_friendData (@{$r_friendRequestList}) {
             my @tagParams=('userName='.$r_friendData->{userName});
-            map {push(@tagParams,$_.'='.$r_friendData->{$_}) if(defined $r_friendData->{$_})} (qw'msg accountId type');
+            map {push(@tagParams,$_.'='.$r_friendData->{$_}) if(defined $r_friendData->{$_})} (qw'msg accountId type')
+                if($includeOptionalTagParams);
             push(@friendCmds,['FRIENDREQUESTLIST',@tagParams]);
           }
         }
@@ -3645,9 +3667,11 @@ sub hFriendRequestList {
     foreach my $friendAccountId (sort keys %{$r_userInfo->{$friendRequestsField}}) {
       my $r_friendData=$r_userInfo->{$friendRequestsField}{$friendAccountId};
       my @tagParams=('userName='.$r_friendData->{userName});
-      push(@tagParams,'msg='.$r_friendData->{msg}) if(defined $r_friendData->{msg});
-      push(@tagParams,'accountId='.$friendAccountId);
-      push(@tagParams,'type='.$type) if(defined $type);
+      if($includeOptionalTagParams) {
+        push(@tagParams,'msg='.$r_friendData->{msg}) if(defined $r_friendData->{msg});
+        push(@tagParams,'accountId='.$friendAccountId);
+        push(@tagParams,'type='.$type) if(defined $type);
+      }
       push(@friendCmds,['FRIENDREQUESTLIST',@tagParams]);
     }
     push(@friendCmds,['FRIENDREQUESTLISTEND']);
@@ -3657,6 +3681,7 @@ sub hFriendRequestList {
 
 sub hFriendList {
   my ($self,$hdl,$r_connInfo,$login,$r_userInfo,$r_cmd,$cmdId)=@_;
+  my $includeOptionalTagParams = $r_userInfo->{lobbyClientType} != CLI_SKYLOBBY;
   if(exists $self->{friendSvc}{FRIENDLIST}) {
     $self->{friendSvc}{FRIENDLIST}(
       sub {
@@ -3666,7 +3691,7 @@ sub hFriendList {
         if(defined $r_friendList) {
           foreach my $r_friendData (@{$r_friendList}) {
             my @tagParams=('userName='.$r_friendData->{userName});
-            push(@tagParams,'accountId='.$r_friendData->{accountId}) if(defined $r_friendData->{accountId});
+            push(@tagParams,'accountId='.$r_friendData->{accountId}) if($includeOptionalTagParams && defined $r_friendData->{accountId});
             push(@friendCmds,['FRIENDLIST',@tagParams]);
           }
         }
@@ -3679,7 +3704,7 @@ sub hFriendList {
     return;
   }else{
     my @friendCmds=(['FRIENDLISTBEGIN']);
-    map {push(@friendCmds,['FRIENDLIST','userName='.$r_userInfo->{friendAccounts}{$_},'accountId='.$_])} (sort keys %{$r_userInfo->{friendAccounts}});
+    map {push(@friendCmds,['FRIENDLIST','userName='.$r_userInfo->{friendAccounts}{$_},$includeOptionalTagParams ? 'accountId='.$_ : ()])} (sort keys %{$r_userInfo->{friendAccounts}});
     push(@friendCmds,['FRIENDLISTEND']);
     return sendClientMulti($self,$hdl,\@friendCmds,$cmdId);
   }

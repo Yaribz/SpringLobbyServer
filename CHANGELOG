@@ -21,3 +21,6 @@ SpringLobbyServer.pm:
       improve code style for some broadcast functions (broadcastChannelLegacy, broadcastBattle, broadcastBattleUFlag)
       fix case of a handler name
 0.18: add support for lobby clients that do not use the 'b' compatibility flag (fix battles opened with SpringLobby clients not being joinable by anyone)
+0.19: add "lobbyClientType" field in userInfo structure to ease implementation of lobby client specific behaviors
+      fix friend management functionality for skylobby users (skylobby only expects the "userName" field in friend management commands parameters)
+      minor rewording of some messages when accountId feature is not implemented
