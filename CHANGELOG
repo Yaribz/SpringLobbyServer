@@ -24,3 +24,13 @@ SpringLobbyServer.pm:
 0.19: add "lobbyClientType" field in userInfo structure to ease implementation of lobby client specific behaviors
       fix friend management functionality for skylobby users (skylobby only expects the "userName" field in friend management commands parameters)
       minor rewording of some messages when accountId feature is not implemented
+0.20: make usernames case-insensitive
+      prevent registering an account while a login attempt is in progress from same connection (race condition)
+      fix client not being auto-disconnected after rename operation if it reconnected using old name while rename operation was in progress (race condition)
+      increase default thresholds for maximum rate of commands triggering DB accesses
+      increase default message size limits in LAN mode (maxReadQueue and maxChatMsgLength)
+      new module export tags ("ipAddr", "srvMode", "lobbyClients", "usrRelTypes" and "usrRelListFilters")
+      add support for Teiserver specific user relationships management (specific commands + additional relationships: follow/avoid/block), declared as "userRelationships" lobby protocol extension
+      replace both "ignoreSvc" and "friendSvc" services by generic "userRelationshipSvc" service (also used for Teiserver specific user relationships)
+      use JSON::XS module if available instead of JSON::PP because JSON encoding is now used to generate response for some commands ("c.user.list_relationships", "c.user.whois" and "c.user.whoisName")
+      add support for Teiserver specific command "c.battle.update_lobby_title", declared as "updateBattleTitle" lobby protocol extension

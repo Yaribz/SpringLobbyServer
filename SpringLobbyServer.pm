@@ -46,7 +46,7 @@
 # ---------------------
 #   Parameters:
 #     $r_connInfo,$login,$r_userInfo,$additionalInGameTime
-#   Return balue (async only):
+#   Return value (async only):
 #     $mustBroadcastUserStatus
 #   Processing:
 #     can update $r_userInfo->{status}{rank} in case of in-game time based ranks
@@ -62,7 +62,7 @@
 # ------------
 #   Parameters:
 #     $r_connInfo,$login,$r_userInfo,$channel,$r_msg,$isExMsg
-#   Return values:
+#   Return value:
 #     $denyMsg (undef if allowed, empty string if silently denied)
 #   Processing:
 #     update $r_msg in place to modify the message
@@ -78,7 +78,7 @@
 # -----------
 #   Parameters:
 #     $r_connInfo,$login,$r_userInfo,$battleFounderName,$r_battleFounderUserInfo,$battleId,$r_msg,$isExMsg
-#   Return values:
+#   Return value:
 #     $denyMsg (undef if allowed, empty string if silently denied)
 #   Processing:
 #     update $r_msg in place to modify the message
@@ -87,7 +87,7 @@
 # ------------
 #   Parameters:
 #     $r_connInfo,$login,$r_userInfo,$recipient,$r_recipientUserInfo,$r_msg,$isExMsg,$isBattleMsg
-#   Return values:
+#   Return value:
 #     $denyMsg (undef if allowed, empty string if silently denied)
 #   Processing:
 #     update $r_msg in place to modify the message
@@ -96,7 +96,7 @@
 # ---------------------
 #   Parameters:
 #     ($r_callback,)$r_connInfo,$login,$r_userInfo,$channel,$r_topic
-#   Return values:
+#   Return value:
 #     $denyMsg (undef if allowed, empty string if silently denied)
 #   Processing:
 #     update $r_topic in place to modify the new channel topic
@@ -110,13 +110,15 @@
 #       $r_connInfo,$userName,$emailVerificationCode ($emailVerifCode = '' if not provided)
 #   Return value:
 #     $deniedReason (undef if allowed)
+#   Processing:
+#     prevent registering duplicate or reserved names (offline server bots), case insensitively
 ########################################
 # authenticationSvc:
 # -----------------
 #   Parameters:
 #     $r_connInfo,$userName,$password,$r_userInfo
-#   Return value:
-#     $deniedReason (undef if allowed)
+#   Return values:
+#     $deniedReason (undef if allowed), $userNameWithFixedCase (can be undef if case does not need to be fixed)
 #   Processing:
 #     should update $r_userInfo fields such as:
 #       status/{rank,access,bot}
@@ -128,10 +130,11 @@
 #       emailAddress
 #       registrationTs
 #       lastLoginTs
-#       ignoredAccounts       ( { <accountId> => {userName => $userName[, reason => $reason] } } )
-#       friendAccounts        ( { <accountId> => <userName> } )
-#       friendRequestsIn      ( { <accountId> => {userName => $userName[, msg => $msg] } } )
-#       friendRequestsOut     ( { <accountId> => {userName => $userName[, msg => $msg] } } )
+#       ignoredAccounts         ( { $accountId => $userName } )
+#       friendAccounts          ( { $accountId => $userName } )
+#       friendshipRequestsIn    ( { $accountId => $userName } )
+#       friendshipRequestsOut   ( { $accountId => $userName } )
+#       userRelationships       ( { $accountId => {userName => $userName, relationship => $relationshipLevel} } )
 ########################################
 # accountManagementSvc{$command}:
 # ------------------------------
@@ -152,7 +155,8 @@
 #       UNBAN                  $userName
 #       LISTBANS
 #       SETACCESS              $userName,$accessMode
-#       DELETEACCOUNT          $userName           (must also remove references from ban, ignore and friend data)
+#       DELETEACCOUNT          $userName           (must also remove references from ban, ignore, friend and other user relationship data)
+#       GETACCOUNTID           $userName           (not a real command, used by c.user.whoisName command)
 #   Return values (callback parameters):
 #     CHANGEEMAIL,CHANGEPASSWORD, SETBOTMODE, BAN, SETACCESS, DELETEACCOUNT
 #       $failedReason,$accountId
@@ -161,44 +165,38 @@
 #         {accountId, registrationTs, emailAddress, inGameTime, lastLoginTs, lobbyClient, macAddressHash, systemHash, accessLevel, country, lastIpAddr}
 #     LISTBANS
 #       $failedReason,$r_bans
+#     GETACCOUNTID
+#       $accountId (undef if unknown user)
 #     _OTHERS_
 #       $failedReason (undef if OK)
 ########################################
-# ignoreSvc{$command}:
-# --------------------
-#   Parameters:
-#     $r_callback,$r_connInfo,$login,$r_userInfo,<lobby cmd params...>
-#       IGNORE                 $userName[,$reason]
-#       UNIGNORE               $userName
-#       IGNORELIST                       (useful to show correct names of offline users who renamed after ignoring user logged in, so ignoring user can unignore them)
-#   Return values (callback parameters):
-#     IGNORE, UNIGNORE
-#       $failedReason,$accountId
-#     IGNORELIST
-#       $r_ignoreList   [{userName => $ignoredUserName[, reason => $ignoreReason][, accountId => $ignoredAccountId]},...]
-########################################
-# friendSvc{$command}:
-# --------------------
-#   Parameters:
-#     $r_callback,$r_connInfo,$login,$r_userInfo,<lobby cmd params...>
-#       FRIENDREQUEST         $userName[,$msg]                          (must ignore duplicate requests and ignored accounts, i.e. set $failedReason to "", and check nb friends and nb requests against maxFriendsByAccount)
-#       ACCEPTFRIENDREQUEST   $userName
-#       DECLINEFRIENDREQUEST  $userName
-#       UNFRIEND              $userName
-#       FRIENDREQUESTLIST     $isOutReq (useful to show correct names of offline users who renamed after target user logged in, so he can accept/decline them)
-#       FRIENDLIST                      (useful to show correct names of offline users who renamed after friends logged in, so they can unfriend them)
-#   Return values (callback parameters):
-#     FRIENDREQUEST, ACCEPTFRIENDREQUEST, DECLINEFRIENDREQUEST, UNFRIEND
-#       $failedReason,$friendAccountId
-#     FRIENDREQUESTLIST
-#       $r_friendRequestList [{userName => $friendName[, msg => $msg][, accountId => $friendAccountId,]},...]
-#     FRIENDLIST
-#       $r_friendList        [{userName => $friendName[, accountId => $friendAccountId]}]
+# userRelationshipSvc{$action}:
+# -----------------------------
+#   ignore,cancelIgnore,setRelationship,requestFriendship,cancelFriendshipRequest,acceptFriendshipRequest,declineFriendshipRequest,cancelFriendship
+#     Parameters:
+#       $r_callback,$r_connInfo,$login,$r_userInfo,$targetAccountId,$targetUserName[,$relationshipLevel|$removeOtherRelationships]
+#         at least one of $targetUserName and $targetAccountId defined (both if user online)
+#         $relationshipLevel provided only for setRelationship (USR_REL_NONE level must also remove ignores to mimic Teiserver behavior)
+#         $removeOtherRelationships provided only for ignore (to mimic Teiserver behavior when c.user.ignore command is used)
+#     Return values (callback parameters):
+#       $failureReason,$targetAccountId,$targetUserName
+#         for requestFriendship and cancelFriendshipRequest, if $failureReason is a scalar ref, the failure will only be reported if extended command was used
+#   list (useful to show correct names of offline users who renamed after current user logged in; used by IGNORELIST, FRIENDREQUESTLIST, FRIENDLIST but not by c.user.list_relationships)
+#     Parameters:
+#       $r_callback,$r_connInfo,$login,$r_userInfo,[$userRelListBitmask]
+#     Return values (callback parameters):
+#       { ?follows => {$accountId => $userName, ...},
+#         ?ignores => {$accountId => $userName, ...},
+#         ?avoids => {$accountId => $userName, ...},
+#         ?blocks => {$accountId => $userName, ...},
+#         ?friends => {$accountId => $userName, ...},
+#         ?friendshipRequestsIn => {$accountId => $userName, ...},
+#         ?friendshipRequestsOut => {$accountId => $userName, ...} }
 ########################################
 # serverBots{$botName}{onPrivateMsg}:
 # ----------------------------------
 #   Parameters: $r_callback,$r_connInfo,$login,$r_userInfo,$privateMsg,$isExMsg ($r_connInfo = undef => msg from another server bot)
-#   Return values: $r_responsePrivateMsgs (undef => no response)
+#   Return value: $r_responsePrivateMsgs (undef => no response)
 ########################################
 # serverBots{$botName}{onChannelMsg}:
 # ----------------------------------
@@ -219,15 +217,38 @@ use strict;
 use AnyEvent::Handle;
 use AnyEvent::Socket;
 use Carp 'croak';
-use JSON::PP ();
 use List::Util qw'all any none first reduce';
+use MIME::Base64 'encode_base64url';
 use Scalar::Util 'weaken';
 use Socket qw'unpack_sockaddr_in inet_ntoa';
+
+use base 'Exporter';
 
 use RsaCertPem 'getPemCertificate';
 use SpringLobbyProtocol qw':server :regex :int32';
 
-our $VERSION='0.19';
+my ($JSON_XS_AVAILABLE,$JSON_ENCODER);
+BEGIN {
+  eval {
+    require JSON::XS;
+    $JSON_XS_AVAILABLE=1;
+    $JSON_ENCODER=\&JSON::XS::encode_json;
+  } or do {
+    require JSON::PP;
+    $JSON_ENCODER=\&JSON::PP::encode_json;
+  }
+}
+
+our $VERSION='0.20';
+
+our %EXPORT_TAGS = (
+  ipAddr => [qw'IP_ADDR_LOOPBACK IP_ADDR_LAN IP_ADDR_WAN'],
+  srvMode => [qw'SRV_MODE_NORMAL SRV_MODE_LAN'],
+  lobbyClients => [qw'CLI_TASCLIENT CLI_SPRINGLOBBY CLI_SPADS CLI_CHOBBY CLI_SKYLOBBY CLI_OTHER'],
+  usrRelTypes => [qw'USR_REL_BLOCK USR_REL_AVOID USR_REL_NONE USR_REL_FOLLOW'],
+  usrRelListFilters => [qw'USR_REL_LIST_FRIEND USR_REL_LIST_FRIEND_REQ_IN USR_REL_LIST_FRIEND_REQ_OUT USR_REL_LIST_FOLLOW USR_REL_LIST_IGNORE USR_REL_LIST_AVOID USR_REL_LIST_BLOCK'],
+    );
+Exporter::export_ok_tags(keys %EXPORT_TAGS);
 
 use constant {
   IP_ADDR_LOOPBACK => 0,
@@ -246,6 +267,20 @@ use constant {
   CLI_CHOBBY => 3,
   CLI_SKYLOBBY => 4,
   CLI_OTHER => 5,
+
+  USR_REL_BLOCK => -200,
+  USR_REL_AVOID => -100,
+  USR_REL_NONE => 0,
+  USR_REL_FOLLOW => 100,
+
+  USR_REL_LIST_FRIEND => 1,
+  USR_REL_LIST_FRIEND_REQ_IN => 1<<1,
+  USR_REL_LIST_FRIEND_REQ_OUT => 1<<2,
+  USR_REL_LIST_FOLLOW => 1<<3,
+  USR_REL_LIST_IGNORE => 1<<4,
+  USR_REL_LIST_AVOID => 1<<5,
+  USR_REL_LIST_BLOCK => 1<<6,
+  
 };
 
 my @LOG_LEVELS=('[ CRITICAL ]','[ ERROR    ]','[ WARNING  ]','[ NOTICE   ]','[ INFO     ]','[ DEBUG    ]');
@@ -303,8 +338,7 @@ our %DEFAULT_PARAMS=(
   authenticationSvc => undef,
   authenticationSvcAsync => undef,
   accountManagementSvc => {},
-  ignoreSvc => {},
-  friendSvc => {},
+  userRelationshipSvc => {},
   channelTopics => {}, # ($channelName => { topic => $topic, author => $author })
   countersCleaningInterval => 60,
   maxChatMsgLength => 1024,   # maximum length of messages sent with SAY(EX)/SAYPRIVATE(EX)/SAYBATTLE(EX)/SAYBATTLEPRIVATE(EX) commands (in number of UTF8 characters)
@@ -313,6 +347,7 @@ our %DEFAULT_PARAMS=(
   unauthentConnTimeout => 10, # maximum time in seconds a connection can stay up without successfully logging in (0 = disabled)
   maxIgnoresByAccount => 100, # maximum number of ignored users by account (0 = disabled)
   maxFriendsByAccount => 100, # maximum number of friends by account (0 = disabled)
+  maxUserRelationshipsByAccount => 100, # maximum number of other user relationships by account (0 = disabled)
   maxUnauthentByHost => 8,    # maximum number of simultaneous unauthenticated client connections by host (0 = disabled)
   maxClientsByHost => 4,      # maximum number of simultaneous unprivileged client connections by host (not counting accounts with bot or access flag, 0 = disabled)
   maxInputRateByUnauthent => [[1,4,1024],[10,16,4096]],                 # maximum rate of input commands/data on unauthenticated connection
@@ -320,7 +355,7 @@ our %DEFAULT_PARAMS=(
   maxInputRateByBot => [[1,1000,262144],[10,4000,524288]],              # maximum rate of input commands/data by bot connection
   maxInducedTrafficRateByClient => [[1,4000,131072],[10,16000,262144]], # maximum rate of commands/data induced by non-bot connection
   maxInducedTrafficRateByBot => [[1,8000,262144],[10,32000,524288]],    # maximum rate of commands/data induced by bot connection
-  maxDbCmdRateByClient => [[1,3],[10,6]],                               # maximum rate of input commands triggering access to database by non-bot connection
+  maxDbCmdRateByClient => [[1,5],[10,10]],                              # maximum rate of input commands triggering access to database by non-bot connection
   maxDbCmdRateByBot => [[1,6],[10,12]],                                 # maximum rate of input commands triggering access to database by bot connection
   maxLoginRateByAccount => [[10,3],[60,6]],                             # maximum rate of successful login operations by account
   maxRenameRateByAccount => [[86400,4]],                                # maximum rate of successful renaming operations by account
@@ -330,10 +365,13 @@ our %DEFAULT_PARAMS=(
     );
 
 our %DEFAULT_PARAMS_LAN_MODE=(
+  maxReadQueue => 32768,
+  maxChatMsgLength => 16384,
   maxConnFailedLogin => 0,
   unauthentConnTimeout => 0,
   maxIgnoresByAccount => 0,
   maxFriendsByAccount => 0,
+  maxUserRelationshipsByAccount => 0,
   maxUnauthentByHost => 0,
   maxClientsByHost => 0,
   maxInputRateByUnauthent => [],
@@ -350,8 +388,10 @@ our %DEFAULT_PARAMS_LAN_MODE=(
   maxFailedAgreementRateByHost => [],
     );
 
-# REGISTER, LOGIN, CONFIRMAGREEMENT, RESETPASSWORDREQUEST, RESETPASSWORD, RESENDVERIFICATION can only be used when not logged in and therefore are not useful for DB commands flood protection.
-# However, they are kept here for completness.
+# REGISTER, LOGIN, CONFIRMAGREEMENT, RESETPASSWORDREQUEST, RESETPASSWORD, RESENDVERIFICATION can only be used when
+# not logged in and therefore are not useful for DB commands flood protection. However, they are kept here for completness.
+# 
+# c.user.list_relationships does not trigger DB access currently as user names aren't returned by current commands
 our %DATABASE_ACCESS_COMMANDS = map {$_ => 1} (
   qw'
   REGISTER
@@ -384,6 +424,19 @@ our %DATABASE_ACCESS_COMMANDS = map {$_ => 1} (
   UNFRIEND
   FRIENDREQUESTLIST
   FRIENDLIST
+
+  c.user.add_friend
+  c.user.accept_friend_request
+  c.user.decline_friend_request
+  c.user.rescind_friend_request
+  c.user.remove_friend
+  
+  c.user.ignore
+  c.user.avoid
+  c.user.block
+  c.user.reset_relationship
+
+  c.user.whoisName
   ');
 
 our %CMDS=(
@@ -457,12 +510,28 @@ our %CMDS=(
   LISTBANS => [100,\&hListBans],
   SETACCESS => [200,\&hSetAccess],
   DELETEACCOUNT => [200,\&hDeleteAccount],
+  
+  'c.user.ignore' => [1,\&hIgnore],
+  'c.user.avoid' => [1,sub {hSetRelationship(@_,USR_REL_AVOID)}],
+  'c.user.block' => [1,sub {hSetRelationship(@_,USR_REL_BLOCK)}],
+  'c.user.reset_relationship' => [1,sub {hSetRelationship(@_,USR_REL_NONE)}],
+  'c.user.list_relationships' => [1,\&hListUserRelationships],
+  
+  'c.user.add_friend' => [1,\&hFriendRequest],
+  'c.user.accept_friend_request' => [1,\&hAcceptFriendRequest],
+  'c.user.decline_friend_request' => [1,\&hDeclineFriendRequest],
+  'c.user.rescind_friend_request' => [1,\&hCancelFriendRequest],
+  'c.user.remove_friend' => [1,\&hUnfriend],
+
+  'c.user.whois' => [1,\&hWhois],
+  'c.user.whoisName' => [1,\&hWhoisName],
+
+  'c.battle.update_lobby_title' => [1,\&hUpdateBattleTitle],
     );
 
 our %IGNORED_CMDS; map {$IGNORED_CMDS{$_}=1} (qw'
                                              GETCHANNELMESSAGES
 
-                                             c.user.list_relationships
                                              c.telemetry.update_client_property
                                              c.telemetry.log_client_event
                                              c.telemetry.upload_infolog');
@@ -472,6 +541,8 @@ my %DEFAULT_SRVBOT_STATUS=(inGame => 0, rank => 0, away => 0, access => 1, bot =
 
 my %DEFAULT_LOBBY_PROTOCOL_EXTENSIONS = (
   'sayBattlePrivate:multicast' => 1,
+  userRelationships => 1,
+  updateBattleTitle => 1,
     );
 
 sub new {
@@ -512,7 +583,7 @@ sub new {
     }
   }
   $self->{protocolExtensions}=\%protocolExtensions;
-  $self->{srvMsgProtocolExtensions}='@PROTOCOL_EXTENSIONS@ '.JSON::PP::encode_json(\%protocolExtensions)
+  $self->{srvMsgProtocolExtensions}='@PROTOCOL_EXTENSIONS@ '.$JSON_ENCODER->(\%protocolExtensions)
       if(%protocolExtensions);
   if($protocolExtensions{'battleStatus:teams-8bit'}) {
     $self->{marshallBattleStatusFunc} =  \&marshallBattleStatusEx;
@@ -563,6 +634,7 @@ sub new {
 
   my $anyEventModel=AnyEvent::detect();
   $self->{logger}("Running SpringLobbyServer v$VERSION with AnyEvent v$AnyEvent::VERSION (event model: $anyEventModel)",4);
+  $self->{logger}('Using pure Perl JSON encoder (unable to load JSON::XS)',2) unless($JSON_XS_AVAILABLE);
   $self->{countersCleaner}=AE::timer($self->{countersCleaningInterval},$self->{countersCleaningInterval},sub {cleanPersistentCounters($weakSelf)});
 
   if(! defined $self->{wanAddress}) {
@@ -1134,6 +1206,18 @@ sub broadcast {
   return ($nbCmdsSent,length($mCmd) * $nbCmdsSent);
 }
 
+sub broadcastNewClients {
+  my $self=shift;
+  my $mCmd=marshallServerCommand(\@_);
+  my $nbCmdsSent;
+  foreach my $user (keys %{$self->{users}}) {
+    next unless($self->{users}{$user}{isNewClient});
+    sendUserMarshalled($self,$user,\$mCmd);
+    ++$nbCmdsSent;
+  }
+  return ($nbCmdsSent,length($mCmd) * $nbCmdsSent);
+}
+
 sub broadcastLegacy {
   my $self=shift;
   my ($mCmd,$mCmdLegacy)=(marshallServerCommand($_[0]),marshallServerCommand($_[1]));
@@ -1413,7 +1497,7 @@ sub hRegister {
   my (undef,$userName,$password,$email)=@{$r_cmd};
   $email//='';
   return closeClientConnection($self,$hdl,'protocol error','cannot register while already logged in')
-      if(exists $r_connInfo->{login});
+      if(exists $r_connInfo->{login} || exists $r_connInfo->{asyncAuthentInProgress} || exists $r_connInfo->{pendingLoginData});
   return closeClientConnection($self,$hdl,'protocol error','invalid REGISTER parameter') unless(
     $userName =~ REGEX_USERNAME
     && length($password) < 50
@@ -1513,6 +1597,7 @@ sub hLogin {
     lobbyClient => $lobbyClient,
     lobbyClientType => $lobbyClientType,
     isLegacyClient => $lobbyClientType == CLI_TASCLIENT,
+    isNewClient => $lobbyClientType > CLI_SPRINGLOBBY,
     macAddressHash => $macAddressHash,
     systemHash => $systemHash,
     compFlags => \%compFlagsHash,
@@ -1528,14 +1613,15 @@ sub hLogin {
     lastLoginTs => time,
     ignoredAccounts => {},
     friendAccounts => {},
-    friendRequestsIn => {},
-    friendRequestsOut => {},
+    friendshipRequestsIn => {},
+    friendshipRequestsOut => {},
+    userRelationships => {},
     inducedTrafficRateCounters => [undef,undef],
     dbCmdCounters => [undef,undef],
     loginTime => $self->{netMsgRcvTime},
       );
   if(defined $self->{authenticationSvc}) {
-    my $deniedReason=$self->{authenticationSvc}($r_connInfo,$userName,$password,\%userInfo);
+    my ($deniedReason,$fixedCaseUserName)=$self->{authenticationSvc}($r_connInfo,$userName,$password,\%userInfo);
     if(defined $deniedReason) {
       checkHostFlood($self,'FailedLogin',$r_connInfo->{host},$self->{netMsgRcvTime},CNT_INCR_ONLY);
       sendClient($self,$hdl,['DENIED',$deniedReason],$cmdId);
@@ -1543,6 +1629,7 @@ sub hLogin {
           if(++$r_connInfo->{nbDeniedLogin} >= $self->{maxConnFailedLogin} && $self->{maxConnFailedLogin});
       return;
     }
+    $userName=$fixedCaseUserName if(defined $fixedCaseUserName);
   }
   if(defined $self->{authenticationSvcAsync}) {
     $r_connInfo->{asyncAuthentInProgress}=1;
@@ -1550,7 +1637,8 @@ sub hLogin {
       sub {
         return if($hdl->destroyed());
         delete $r_connInfo->{asyncAuthentInProgress};
-        my $deniedReason=shift;
+        my ($deniedReason,$fixedCaseUserName)=@_;
+        $userName=$fixedCaseUserName if(defined $fixedCaseUserName);
         if(defined $deniedReason) {
           checkHostFlood($self,'FailedLogin',$r_connInfo->{host},$userInfo{loginTime},CNT_INCR_ONLY);
           sendClient($self,$hdl,['DENIED',$deniedReason],$cmdId);
@@ -1895,16 +1983,20 @@ sub hRenameAccount {
   my $currentTime=$self->{netMsgRcvTime};
   return sendClient($self,$hdl,['SERVERMSG','Rename denied: too many renames for this account'],$cmdId)
       if(defined checkAccountRenameFlood($self,$r_userInfo,$currentTime,CNT_CHECK_ONLY));
+  my $accountId=$r_userInfo->{accountId};
   $self->{accountManagementSvc}{RENAMEACCOUNT}(
     sub {
-      return if($hdl->destroyed());
       my $failedReason=shift;
       if(defined $failedReason) {
+        return if($hdl->destroyed());
         sendClient($self,$hdl,['SERVERMSG','Failed to rename to '.$userName.': '.$failedReason],$cmdId);
       }else{
-        checkAccountRenameFlood($self,$r_userInfo,$currentTime,CNT_INCR_ONLY);
-        sendClient($self,$hdl,['SERVERMSG','Your account has been renamed to '.$userName.'. Reconnect with the new username (you will now be automatically disconnected).'],$cmdId);
-        closeClientConnection($self,$hdl,'renaming',undef,undef,1);
+        my ($onlineUser,$r_onlineUserData)=getOnlineClientData($self,$accountId,$login);
+        return unless(defined $onlineUser);
+        checkAccountRenameFlood($self,$r_onlineUserData,$currentTime,CNT_INCR_ONLY);
+        return if($onlineUser eq $userName);
+        sendUser($self,$onlineUser,['SERVERMSG','Your account has been renamed to '.$userName.'. Reconnect with the new username (you will now be automatically disconnected).'],$cmdId);
+        closeClientConnection($self,$self->{connections}{$r_onlineUserData->{connIdx}}{hdl},'renaming',undef,undef,1);
       }
     },
     $r_connInfo,$login,$r_userInfo,$userName,
@@ -2243,6 +2335,9 @@ sub hJoinBattle {
   return sendClient($self,$hdl,['JOINBATTLEFAILED','already in a battle'],$cmdId) if(defined $r_userInfo->{battle});
   my $battleFounder=$r_b->{founder};
   my $r_battleFounderInfo=$self->{users}{$battleFounder};
+  my $accountId=$r_userInfo->{accountId};
+  return sendClient($self,$hdl,['JOINBATTLEFAILED','blocked by host'],$cmdId)
+      if($accountId && exists $r_battleFounderInfo->{userRelationships}{$accountId} && $r_battleFounderInfo->{userRelationships}{$accountId}{relationship} <= USR_REL_BLOCK);
   if(defined $self->{onBattleJoin}) {
     my $denyMsg=$self->{onBattleJoin}($r_connInfo,$login,$r_userInfo,$battleFounder,$r_battleFounderInfo,$bId);
     return sendClient($self,$hdl,['JOINBATTLEFAILED',$denyMsg],$cmdId) if(defined $denyMsg);
@@ -2700,6 +2795,22 @@ sub hUpdateBattleInfo {
   return broadcast($self,'UPDATEBATTLEINFO',$bId,$nbSpec,$locked,$mapHash,$mapName);
 }
 
+sub hUpdateBattleTitle {
+  my ($self,$hdl,$r_connInfo,$login,$r_userInfo,$r_cmd,$cmdId)=@_;
+  my $title=$r_cmd->[1];
+  return closeClientConnection($self,$hdl,'protocol error','invalid c.battle.update_lobby_title parameter')
+      unless(length($title) && length($title) < 100);
+  my $bId=$r_userInfo->{battle};
+  return unless(defined $bId);
+  my $r_b=$self->{battles}{$bId};
+  return unless($r_b->{founder} eq $login);
+  my @inducedTraffic=sendClient($self,$hdl,['OK','cmd=c.battle.update_lobby_title'],$cmdId);
+  return @inducedTraffic if($r_b->{title} eq $title);
+  $r_b->{title}=$title;
+  addInducedTraffic(\@inducedTraffic,broadcastNewClients($self,'s.battle.update_lobby_title',$bId,$title));
+  return @inducedTraffic;
+}
+
 sub hAddStartRect {
   my ($self,$hdl,$r_connInfo,$login,$r_userInfo,$r_cmd,$cmdId)=@_;
   my (undef,$team,$left,$top,$right,$bottom)=@{$r_cmd};
@@ -2796,7 +2907,7 @@ sub hSayBattlePrivate {
 sub hRing {
   my ($self,$hdl,$r_connInfo,$login,$r_userInfo,$r_cmd,$cmdId)=@_;
   my $recipient=$r_cmd->[1];
-  return closeClientConnection($self,$hdl,'protocol error',"invalid RING parameter") unless($recipient =~ REGEX_USERNAME);
+  return closeClientConnection($self,$hdl,'protocol error','invalid RING parameter') unless($recipient =~ REGEX_USERNAME);
   my $bId=$r_userInfo->{battle};
   return unless(defined $bId);
   my $r_b=$self->{battles}{$bId};
@@ -2814,9 +2925,9 @@ sub hGetUserInfo {
         unless($r_userInfo->{status}{access});
     return sendClient($self,$hdl,['SERVERMSG','Protocol error: invalid GETUSERINFO parameter'],$cmdId)
         unless($userName =~ REGEX_USERNAME);
-    my $r_onlineUserInfo=$self->{users}{$userName};
-    if(defined $r_onlineUserInfo) {
-      return sendUserInfoAsServerMsg($self,$hdl,$userName,$r_onlineUserInfo,$cmdId,1);
+    my $onlineUserName=$self->{lcUsers}{lc($userName)};
+    if(defined $onlineUserName) {
+      return sendUserInfoAsServerMsg($self,$hdl,$userName,$self->{users}{$onlineUserName},$cmdId,1);
     }elsif(exists $self->{accountManagementSvc}{GETUSERINFO}) {
       $self->{accountManagementSvc}{GETUSERINFO}(
         sub {
@@ -2885,7 +2996,7 @@ sub hForceLeaveChannel {
   return sendClient($self,$hdl,['SERVERMSG','Protocol error: invalid FORCELEAVECHANNEL parameter'],$cmdId)
       unless($chan =~ REGEX_CHANNEL
              && $kickedUser =~ REGEX_USERNAME
-             && (! defined $reason || length($reason) < 255));
+             && (! defined $reason || length($reason) < 256));
   return removeUserFromChannel($self,$kickedUser,$chan,$reason,$login);
 }
 
@@ -2895,7 +3006,7 @@ sub hKick {
   undef $reason if(defined $reason && $reason eq '');
   return sendClient($self,$hdl,['SERVERMSG','Protocol error: invalid KICK parameter'],$cmdId)
       unless($kickedUser =~ REGEX_USERNAME
-             && (! defined $reason || length($reason) < 255));
+             && (! defined $reason || length($reason) < 256));
   return sendClient($self,$hdl,['SERVERMSG','Cannot kick '.$kickedUser.', user not found online'],$cmdId)
       unless(exists $self->{users}{$kickedUser});
   my @inducedTraffic=kickUserFromServer($self,$kickedUser,$login,$reason);
@@ -2929,7 +3040,8 @@ sub hSetBotMode {
   }else{
     return sendClient($self,$hdl,['SERVERMSG','Protocol error: invalid SETBOTMODE parameter (botMode)'],$cmdId);
   }
-  my $r_botInfo=$self->{users}{$botName};
+  my $onlineBotName=$self->{lcUsers}{lc($botName)};
+  my $r_botInfo = defined $onlineBotName ? $self->{users}{$onlineBotName} : undef;
   return sendClient($self,$hdl,['SERVERMSG','Failed to set bot mode for '.$botName.': bot mode is already set to '.$botMode],$cmdId)
       if(defined $r_botInfo && $r_botInfo->{status}{bot} == $botMode);
   if(exists $self->{accountManagementSvc}{SETBOTMODE}) {
@@ -2960,8 +3072,8 @@ sub hSetBotMode {
   }elsif(defined $r_botInfo) {
     $r_botInfo->{status}{bot}=$botMode;
     $r_botInfo->{marshalledStatus}=marshallClientStatus($r_botInfo->{status});
-    my @inducedTraffic=broadcast($self,'CLIENTSTATUS',$botName,$r_botInfo->{marshalledStatus});
-    addInducedTraffic(\@inducedTraffic,sendClient($self,$hdl,['SERVERMSG','Bot mode for '.$botName.' successfully set to '.$botMode],$cmdId));
+    my @inducedTraffic=broadcast($self,'CLIENTSTATUS',$onlineBotName,$r_botInfo->{marshalledStatus});
+    addInducedTraffic(\@inducedTraffic,sendClient($self,$hdl,['SERVERMSG','Bot mode for '.$onlineBotName.' successfully set to '.$botMode],$cmdId));
     return @inducedTraffic;
   }else{
     return sendClient($self,$hdl,['SERVERMSG','Cannot set bot mode of offline client, feature is not supported by this server'],$cmdId);
@@ -3011,7 +3123,7 @@ sub hBan {
   return sendClient($self,$hdl,['SERVERMSG','Protocol error: invalid BAN parameter'],$cmdId)
       unless($userName =~ REGEX_USERNAME
              && $duration =~ REGEX_BANDURATION
-             && (! defined $reason || length($reason) < 255));
+             && (! defined $reason || length($reason) < 256));
   return sendClient($self,$hdl,['SERVERMSG','Cannot ban account, feature is not supported by this server'],$cmdId)
       unless(exists $self->{accountManagementSvc}{BAN});
   my %DURATION_SUFFIXES=(
@@ -3121,7 +3233,8 @@ sub hSetAccess {
   }elsif($accessLevel !~ /^\d{1,6}$/) {
     return sendClient($self,$hdl,['SERVERMSG','Protocol error: invalid SETACCESS parameter (accessLevel)'],$cmdId)
   }
-  my $r_updatedUserInfo=$self->{users}{$userName};
+  my $onlineUserName=$self->{lcUsers}{lc($userName)};
+  my $r_updatedUserInfo = defined $onlineUserName ? $self->{users}{$onlineUserName} : undef;
   return sendClient($self,$hdl,['SERVERMSG','Failed to set access level for '.$userName.': access is already set to '.$accessLevel],$cmdId)
       if(defined $r_updatedUserInfo && $r_updatedUserInfo->{accessLevel} == $accessLevel);
   my $newAccessFlag;
@@ -3162,7 +3275,7 @@ sub hSetAccess {
     if(defined $newAccessFlag && $r_updatedUserInfo->{status}{access} != $newAccessFlag) {
       $r_updatedUserInfo->{status}{access} = $newAccessFlag;
       $r_updatedUserInfo->{marshalledStatus}=marshallClientStatus($r_updatedUserInfo->{status});
-      @inducedTraffic=broadcast($self,'CLIENTSTATUS',$userName,$r_updatedUserInfo->{marshalledStatus});
+      @inducedTraffic=broadcast($self,'CLIENTSTATUS',$onlineUserName,$r_updatedUserInfo->{marshalledStatus});
     }
     addInducedTraffic(\@inducedTraffic,sendClient($self,$hdl,['SERVERMSG','Access level for '.$userName.' successfully set to '.$accessLevel],$cmdId));
     return @inducedTraffic;
@@ -3200,59 +3313,66 @@ sub hDeleteAccount {
   return;
 }
 
-sub hIgnore {
-  my ($self,$hdl,$r_connInfo,$login,$r_userInfo,$r_cmd,$cmdId)=@_;
-  my (undef,@tagParamDefs)=@{$r_cmd};
-  my ($r_tagParams,$paramError)=parseTagParamDefs(\@tagParamDefs,['userName','reason']);
-  return closeClientConnection($self,$hdl,'protocol error','invalid IGNORE parameter: '.$paramError)
-      if(defined $paramError);
-  my ($userName,$reason)=@{$r_tagParams}{qw'userName reason'};
-  return closeClientConnection($self,$hdl,'protocol error','missing IGNORE parameter: userName')
-      unless(defined $userName);
-  return closeClientConnection($self,$hdl,'protocol error','invalid IGNORE parameter')
-      unless($userName =~ REGEX_USERNAME
-             && (! defined $reason || length($reason) < 255));
-  my $accountId=$r_userInfo->{accountId};
-  return sendClient($self,$hdl,['SERVERMSG','Cannot ignore account, this requires accountId feature which is not supported by this server'],$cmdId)
-      unless($accountId);
-  my $ignoredAccountId;
-  if(exists $self->{users}{$userName}) {
-    $ignoredAccountId=$self->{users}{$userName}{accountId};
-    return sendClient($self,$hdl,['SERVERMSG','Cannot ignore account, this requires accountId feature which is not fully supported by this server'],$cmdId)
-        unless($ignoredAccountId);
-    return sendClient($self,$hdl,['SERVERMSG','Failed to ignore '.$userName.': account is already ignored'],$cmdId)
-        if(exists $r_userInfo->{ignoredAccounts}{$ignoredAccountId});
-  }
-  return sendClient($self,$hdl,['SERVERMSG','Cannot ignore more accounts: maximum number of ignored accounts reached'],$cmdId)
-      if($self->{maxIgnoresByAccount} && keys %{$r_userInfo->{ignoredAccounts}} >= $self->{maxIgnoresByAccount});
-  if(exists $self->{ignoreSvc}{IGNORE}) {
-    $self->{ignoreSvc}{IGNORE}(
-      sub {
-        my ($failedReason,$ignoredAccountIdFromDb)=@_;
-        my @inducedTraffic;
-        if(defined $failedReason) {
-          return if($hdl->destroyed());
-          @inducedTraffic=sendClient($self,$hdl,['SERVERMSG','Failed to ignore '.$userName.': '.$failedReason],$cmdId);
-        }else{
-          # client may have disconnected, reconnected and even renamed during async processing...
-          my (undef,$r_currentUserInfo)=getOnlineClientData($self,$accountId);
-          return unless(defined $r_currentUserInfo && ! exists $r_currentUserInfo->{ignoredAccounts}{$ignoredAccountIdFromDb});
-          $r_currentUserInfo->{ignoredAccounts}{$ignoredAccountIdFromDb}=$r_tagParams;
-          return if($hdl->destroyed()); # do not send command ack if user reconnected
-          @inducedTraffic=sendClient($self,$hdl,$r_cmd,$cmdId);
-        }
-        closeClientConnection($self,$hdl,'induced traffic flood')
-            if($inducedTraffic[0] && defined checkInducedTrafficFlood($self,$r_userInfo,@inducedTraffic));
-      },
-      $r_connInfo,$login,$r_userInfo,$userName,$reason,
-    );
-    return;
-  }elsif(defined $ignoredAccountId) {
-    $r_userInfo->{ignoredAccounts}{$ignoredAccountId}=$r_tagParams;
-    return sendClient($self,$hdl,$r_cmd,$cmdId);
+sub checkRelationshipCmdParams {
+  my ($self,$login,$accountId,$cmdName,$r_cmdParams,$extParamIsAccountId,$optionalTextParamName)=@_;
+  my ($isExtCmd,$targetUserName,$targetAccountId);
+  if(substr($cmdName,1,1) eq '.') {
+    $isExtCmd=1;
+    if($extParamIsAccountId) {
+      $targetAccountId=$r_cmdParams->[0];
+    }else{
+      $targetUserName=$r_cmdParams->[0];
+    }
   }else{
-    return sendClient($self,$hdl,['SERVERMSG','Cannot ignore offline account, feature is not supported by this server'],$cmdId);
+    my ($r_params,$paramError)=parseTagParamDefs($r_cmdParams,['userName','accountId',defined $optionalTextParamName ? $optionalTextParamName : ()]);
+    return ("invalid $cmdName parameter: $paramError")
+        if(defined $paramError);
+    my $optionalTextParam;
+    ($targetUserName,$targetAccountId,$optionalTextParam)=@{$r_params}{'userName','accountId',defined $optionalTextParamName ? $optionalTextParamName : ()};
+    return ("invalid $optionalTextParamName parameter value for command $cmdName")
+        if(defined $optionalTextParam && length($optionalTextParam) > 255);
   }
+  if(defined $targetUserName) {
+    return ("invalid $cmdName parameters: userName and accountId are mutually exclusive")
+        if(defined $targetAccountId);
+    return ("invalid userName parameter value for command $cmdName")
+        unless($targetUserName =~ REGEX_USERNAME);
+  }elsif(defined $targetAccountId) {
+    return ("invalid accountId parameter value for command $cmdName")
+        unless($targetAccountId =~ REGEX_ACCOUNTID);
+    $targetAccountId+=0;
+  }else{
+    return ("missing mandatory $cmdName parameter: userName or accountId");
+  }
+
+  return (undef,'this requires accountId feature which is not supported by this server')
+      unless($accountId);
+  if(defined $targetAccountId) {
+    return (undef,'invalid accountId value: 0')
+        unless($targetAccountId);
+    return (undef,'action not applicable to oneself')
+        if($targetAccountId == $accountId);
+    $targetUserName=$self->{accounts}{$targetAccountId};
+  }else{
+    my $targetUserIsOnline;
+    if(exists $self->{users}{$targetUserName}) {
+      $targetUserIsOnline=1;
+    }else{
+      my $lcTargetUserName=lc($targetUserName);
+      if(exists $self->{lcUsers}{$lcTargetUserName}) {
+        $targetUserName=$self->{lcUsers}{$lcTargetUserName};
+        $targetUserIsOnline=1;
+      }
+    }
+    if($targetUserIsOnline) {
+      $targetAccountId=$self->{users}{$targetUserName}{accountId};
+      return (undef,'this requires accountId feature which is not fully supported by this server')
+          unless($targetAccountId);
+      return (undef,'action not applicable to oneself')
+          if($targetUserName eq $login);
+    }
+  }
+  return (undef,undef,$isExtCmd,$targetUserName,$targetAccountId);
 }
 
 sub parseTagParamDefs {
@@ -3273,176 +3393,306 @@ sub parseTagParamDefs {
   return ($r_tagParams);
 }
 
+sub sendOkCmdUsername { sendClient($_[0],$_[1],['OK','cmd='.$_[2],'userName='.$_[3]],$_[4]) }
+sub sendNoCmdUsername { sendClient($_[0],$_[1],['NO','cmd='.$_[2],'userName='.$_[3]],$_[4]) }
+
+sub hIgnore {
+  my ($self,$hdl,$r_connInfo,$login,$r_userInfo,$r_cmd,$cmdId)=@_;
+  my $accountId=$r_userInfo->{accountId};
+  my ($cmdName,@cmdParams)=@{$r_cmd};
+  my ($protocolError,$failureReason,$isExtCmd,$ignoredUserName,$ignoredAccountId)=checkRelationshipCmdParams($self,$login,$accountId,$cmdName,\@cmdParams,0,'reason');
+  return closeClientConnection($self,$hdl,'protocol error',$protocolError)
+      if(defined $protocolError);
+  if(! defined $failureReason) {
+    if(defined $ignoredAccountId && exists $r_userInfo->{ignoredAccounts}{$ignoredAccountId}) {
+      $failureReason=($ignoredUserName//$r_userInfo->{ignoredAccounts}{$ignoredAccountId}).' is already ignored'
+          unless($isExtCmd && exists $r_userInfo->{userRelationships}{$ignoredAccountId});
+    }elsif($self->{maxIgnoresByAccount} && keys %{$r_userInfo->{ignoredAccounts}} >= $self->{maxIgnoresByAccount}) {
+      $failureReason='maximum number of ignored accounts reached';
+    }
+  }
+  if(defined $failureReason) {
+    my @inducedTraffic=sendClient($self,$hdl,['SERVERMSG','Cannot ignore account, '.$failureReason],$cmdId);
+    addInducedTraffic(\@inducedTraffic,sendNoCmdUsername($self,$hdl,$cmdName,$ignoredUserName,$cmdId)) if($isExtCmd);
+    return @inducedTraffic;
+  }
+  if(exists $self->{userRelationshipSvc}{ignore}) {
+    $self->{userRelationshipSvc}{ignore}(
+      sub {
+        my ($failureReason,$ignoredAccountIdFromDb,$ignoredUserNameFromDb)=@_;
+        my @inducedTraffic;
+        if(defined $failureReason) {
+          return if($hdl->destroyed());
+          @inducedTraffic=sendClient($self,$hdl,['SERVERMSG','Failed to ignore '.($ignoredUserName//'#'.$ignoredAccountId).': '.$failureReason],$cmdId);
+          addInducedTraffic(\@inducedTraffic,sendNoCmdUsername($self,$hdl,$cmdName,$ignoredUserName,$cmdId)) if($isExtCmd);
+        }else{
+          # client may have disconnected, reconnected and even renamed during async processing...
+          my (undef,$r_currentUserInfo)=getOnlineClientData($self,$accountId);
+          return unless(defined $r_currentUserInfo && (! exists $r_currentUserInfo->{ignoredAccounts}{$ignoredAccountIdFromDb} || ($isExtCmd && exists $r_currentUserInfo->{userRelationships}{$ignoredAccountIdFromDb})));
+          $r_currentUserInfo->{ignoredAccounts}{$ignoredAccountIdFromDb}=$ignoredUserNameFromDb;
+          delete $r_currentUserInfo->{userRelationships}{$ignoredAccountIdFromDb} if($isExtCmd);
+          return if($hdl->destroyed()); # do not send command ack if user reconnected
+          @inducedTraffic = $isExtCmd ? sendOkCmdUsername($self,$hdl,$cmdName,$ignoredUserName,$cmdId) : sendClient($self,$hdl,$r_cmd,$cmdId);
+        }
+        closeClientConnection($self,$hdl,'induced traffic flood')
+            if($inducedTraffic[0] && defined checkInducedTrafficFlood($self,$r_userInfo,@inducedTraffic));
+      },
+      $r_connInfo,$login,$r_userInfo,$ignoredAccountId,$ignoredUserName,$isExtCmd,
+    );
+    return;
+  }
+  if(defined $ignoredAccountId && defined $ignoredUserName) {
+    $r_userInfo->{ignoredAccounts}{$ignoredAccountId}=$ignoredUserName;
+    delete $r_userInfo->{userRelationships}{$ignoredAccountId} if($isExtCmd);
+    return $isExtCmd ? sendOkCmdUsername($self,$hdl,$cmdName,$ignoredUserName,$cmdId) : sendClient($self,$hdl,$r_cmd,$cmdId);
+  }
+  my @inducedTraffic=sendClient($self,$hdl,['SERVERMSG','Cannot ignore offline account, feature is not supported by this server'],$cmdId);
+  addInducedTraffic(\@inducedTraffic,sendNoCmdUsername($self,$hdl,$cmdName,$ignoredUserName,$cmdId)) if($isExtCmd);
+  return @inducedTraffic;
+}
+
 sub hUnignore {
   my ($self,$hdl,$r_connInfo,$login,$r_userInfo,$r_cmd,$cmdId)=@_;
-  my (undef,@tagParamDefs)=@{$r_cmd};
-  my ($r_tagParams,$paramError)=parseTagParamDefs(\@tagParamDefs,['userName']);
-  return closeClientConnection($self,$hdl,'protocol error','invalid UNIGNORE parameter: '.$paramError)
-      if(defined $paramError);
-  my $userName=$r_tagParams->{userName};
-  return closeClientConnection($self,$hdl,'protocol error','missing UNIGNORE parameter: userName')
-      unless(defined $userName);
-  return closeClientConnection($self,$hdl,'protocol error','invalid UNIGNORE parameter')
-      unless($userName =~ REGEX_USERNAME);
   my $accountId=$r_userInfo->{accountId};
-  return sendClient($self,$hdl,['SERVERMSG','Cannot unignore account, this requires accountId feature which is not supported by this server'],$cmdId)
-      unless($accountId);
-  my $ignoredAccountId;
-  if(exists $self->{users}{$userName}) {
-    $ignoredAccountId=$self->{users}{$userName}{accountId};
-    return sendClient($self,$hdl,['SERVERMSG','Cannot unignore account, this requires accountId feature which is not fully supported by this server'],$cmdId)
-        unless($ignoredAccountId);
-    return sendClient($self,$hdl,['SERVERMSG','Failed to unignore '.$userName.': account is not ignored'],$cmdId)
-        unless(exists $r_userInfo->{ignoredAccounts}{$ignoredAccountId});
+  my ($cmdName,@cmdParams)=@{$r_cmd};
+  my ($protocolError,$failureReason,$isExtCmd,$ignoredUserName,$ignoredAccountId)=checkRelationshipCmdParams($self,$login,$accountId,$cmdName,\@cmdParams,0);
+  return closeClientConnection($self,$hdl,'protocol error',$protocolError)
+      if(defined $protocolError);
+  if(! defined $failureReason && defined $ignoredAccountId && ! exists $r_userInfo->{ignoredAccounts}{$ignoredAccountId}) {
+    $failureReason=($ignoredUserName//'#'.$ignoredAccountId).' is not ignored';
   }
-  if(exists $self->{ignoreSvc}{UNIGNORE}) {
-    $self->{ignoreSvc}{UNIGNORE}(
+  if(defined $failureReason) {
+    my @inducedTraffic=sendClient($self,$hdl,['SERVERMSG','Cannot unignore account, '.$failureReason],$cmdId);
+    addInducedTraffic(\@inducedTraffic,sendNoCmdUsername($self,$hdl,$cmdName,$ignoredUserName,$cmdId)) if($isExtCmd);
+    return @inducedTraffic;
+  }
+  if(exists $self->{userRelationshipSvc}{cancelIgnore}) {
+    $self->{userRelationshipSvc}{cancelIgnore}(
       sub {
-        my ($failedReason,$ignoredAccountIdFromDb)=@_;
+        my ($failureReason,$ignoredAccountIdFromDb,$ignoredUserNameFromDb)=@_;
         my @inducedTraffic;
-        if(defined $failedReason) {
+        if(defined $failureReason) {
           return if($hdl->destroyed());
-          @inducedTraffic=sendClient($self,$hdl,['SERVERMSG','Failed to unignore '.$userName.': '.$failedReason],$cmdId);
+          @inducedTraffic=sendClient($self,$hdl,['SERVERMSG','Failed to unignore '.($ignoredUserName//'#'.$ignoredAccountId).': '.$failureReason],$cmdId);
+          addInducedTraffic(\@inducedTraffic,sendNoCmdUsername($self,$hdl,$cmdName,$ignoredUserName,$cmdId)) if($isExtCmd);
         }else{
           # client may have disconnected, reconnected and even renamed during async processing...
           my (undef,$r_currentUserInfo)=getOnlineClientData($self,$accountId);
           return unless(defined $r_currentUserInfo && exists $r_currentUserInfo->{ignoredAccounts}{$ignoredAccountIdFromDb});
           delete $r_currentUserInfo->{ignoredAccounts}{$ignoredAccountIdFromDb};
           return if($hdl->destroyed()); # do not send command ack if user reconnected
-          @inducedTraffic=sendClient($self,$hdl,$r_cmd,$cmdId);
+          @inducedTraffic = $isExtCmd ? sendOkCmdUsername($self,$hdl,$cmdName,$ignoredUserName,$cmdId) : sendClient($self,$hdl,$r_cmd,$cmdId);
         }
         closeClientConnection($self,$hdl,'induced traffic flood')
             if($inducedTraffic[0] && defined checkInducedTrafficFlood($self,$r_userInfo,@inducedTraffic));
       },
-      $r_connInfo,$login,$r_userInfo,$userName,
+      $r_connInfo,$login,$r_userInfo,$ignoredAccountId,$ignoredUserName,
     );
     return;
-  }elsif(defined $ignoredAccountId) {
+  }
+  my $unignoredAccounts=0;
+  if(defined $ignoredAccountId) {
     delete $r_userInfo->{ignoredAccounts}{$ignoredAccountId};
-    return sendClient($self,$hdl,$r_cmd,$cmdId);
+    $unignoredAccounts=1;
   }else{
-    my $unignoredAccounts=0;
     foreach my $ignoredId (keys %{$r_userInfo->{ignoredAccounts}}) {
-      if($r_userInfo->{ignoredAccounts}{$ignoredId}{userName} eq $userName) {
+      if($r_userInfo->{ignoredAccounts}{$ignoredId} eq $ignoredUserName) {
         delete $r_userInfo->{ignoredAccounts}{$ignoredId};
         $unignoredAccounts++;
       }
     }
-    if($unignoredAccounts) {
-      return sendClient($self,$hdl,$r_cmd,$cmdId);
-    }else{
-      return sendClient($self,$hdl,['SERVERMSG','Failed to unignore '.$userName.': user is not ignored'],$cmdId)
-    }
+  }
+  if($unignoredAccounts) {
+    return $isExtCmd ? sendOkCmdUsername($self,$hdl,$cmdName,$ignoredUserName,$cmdId) : sendClient($self,$hdl,$r_cmd,$cmdId);
+  }else{
+    my @inducedTraffic=sendClient($self,$hdl,['SERVERMSG',"Cannot unignore account, $ignoredUserName is not ignored"],$cmdId);
+    addInducedTraffic(\@inducedTraffic,sendNoCmdUsername($self,$hdl,$cmdName,$ignoredUserName,$cmdId)) if($isExtCmd);
+    return @inducedTraffic;
   }
 }
 
 sub hIgnoreList {
   my ($self,$hdl,$r_connInfo,$login,$r_userInfo,$r_cmd,$cmdId)=@_;
-  if(exists $self->{ignoreSvc}{IGNORELIST}) {
-    $self->{ignoreSvc}{IGNORELIST}(
+  if(exists $self->{userRelationshipSvc}{list}) {
+    $self->{userRelationshipSvc}{list}(
       sub {
         return if($hdl->destroyed());
-        my $r_ignoreList=shift;
-        my @ignoreListCmds=(['IGNORELISTBEGIN']);
-        if(defined $r_ignoreList) {
-          foreach my $r_ignoreData (@{$r_ignoreList}) {
-            my @tagParams=('userName='.$r_ignoreData->{userName});
-            push(@tagParams,'reason='.$r_ignoreData->{reason}) if(defined $r_ignoreData->{reason});
-            push(@tagParams,'accountId='.$r_ignoreData->{accountId}) if(defined $r_ignoreData->{accountId});
-            push(@ignoreListCmds,['IGNORELIST',@tagParams]);
-          }
-        }
-        push(@ignoreListCmds,['IGNORELISTEND']);
+        my $r_ignores=$_[0]{ignores}//{};
+        my @ignoreListCmds=(
+          ['IGNORELISTBEGIN'],
+          (map {['IGNORELIST','userName='.($self->{accounts}{$_}//$r_ignores->{$_}),'accountId='.$_]} (keys %{$r_ignores})),
+          ['IGNORELISTEND'],
+            );
         my @inducedTraffic=sendClientMulti($self,$hdl,\@ignoreListCmds,$cmdId);
         closeClientConnection($self,$hdl,'induced traffic flood')
             if($inducedTraffic[0] && defined checkInducedTrafficFlood($self,$r_userInfo,@inducedTraffic));
       },
-      $r_connInfo,$login,$r_userInfo);
+      $r_connInfo,$login,$r_userInfo,USR_REL_LIST_IGNORE);
     return;
   }else{
-    my @ignoreListCmds=(['IGNORELISTBEGIN']);
-    foreach my $ignoredId (sort keys %{$r_userInfo->{ignoredAccounts}}) {
-      my $r_ignoreData=$r_userInfo->{ignoredAccounts}{$ignoredId};
-      my @tagParams=('userName='.($self->{accounts}{$ignoredId}//$r_ignoreData->{userName}));
-      my $reason=$r_ignoreData->{reason};
-      push(@tagParams,'reason='.$reason) if(defined $reason);
-      push(@tagParams,'accountId='.$ignoredId);
-      push(@ignoreListCmds,['IGNORELIST',@tagParams]);
-    }
-    push(@ignoreListCmds,['IGNORELISTEND']);
+    my @ignoreListCmds=(
+      ['IGNORELISTBEGIN'],
+      (map {['IGNORELIST','userName='.($self->{accounts}{$_}//$r_userInfo->{ignoredAccounts}{$_}),'accountId='.$_]} (keys %{$r_userInfo->{ignoredAccounts}})),
+      ['IGNORELISTEND'],
+        );
     return sendClientMulti($self,$hdl,\@ignoreListCmds,$cmdId);
   }
 }
 
+# No command for this in original Spring lobby protocol
+sub hSetRelationship {
+  my ($self,$hdl,$r_connInfo,$login,$r_userInfo,$r_cmd,$cmdId,$targetRelationship)=@_;
+  my $accountId=$r_userInfo->{accountId};
+  my ($cmdName,@cmdParams)=@{$r_cmd};
+  my ($protocolError,$failureReason,$isExtCmd,$targetUserName,$targetAccountId)=checkRelationshipCmdParams($self,$login,$accountId,$cmdName,\@cmdParams,0);
+  return closeClientConnection($self,$hdl,'protocol error',$protocolError)
+      if(defined $protocolError);
+  my $action = $targetRelationship ? {USR_REL_AVOID => 'avoid', USR_REL_BLOCK => 'block', USR_REL_FOLLOW => 'follow'}->{$targetRelationship} : 'reset relationship with';
+  if(! defined $failureReason && defined $targetAccountId) {
+    my $r_existingRelationship=$r_userInfo->{userRelationships}{$targetAccountId};
+    if($targetRelationship) {
+      if(defined $r_existingRelationship) {
+        return $isExtCmd ? sendOkCmdUsername($self,$hdl,$cmdName,$targetUserName,$cmdId) : sendClient($self,$hdl,$r_cmd,$cmdId)
+            if($r_existingRelationship->{relationship} == $targetRelationship);
+      }elsif($self->{maxUserRelationshipsByAccount} && keys %{$r_userInfo->{userRelationships}} >= $self->{maxUserRelationshipsByAccount}) {
+        $failureReason='maximum number of user relationships reached';
+      }
+    }elsif(! defined $r_existingRelationship && ! exists $r_userInfo->{ignoredAccounts}{$targetAccountId}) {
+      return $isExtCmd ? sendOkCmdUsername($self,$hdl,$cmdName,$targetUserName,$cmdId) : sendClient($self,$hdl,$r_cmd,$cmdId);
+    }
+  }
+  if(defined $failureReason) {
+    my @inducedTraffic=sendClient($self,$hdl,['SERVERMSG',"Cannot $action user, ".$failureReason],$cmdId);
+    addInducedTraffic(\@inducedTraffic,sendNoCmdUsername($self,$hdl,$cmdName,$targetUserName,$cmdId)) if($isExtCmd);
+    return @inducedTraffic;
+  }
+  if(exists $self->{userRelationshipSvc}{setRelationship}) {
+    $self->{userRelationshipSvc}{setRelationship}(
+      sub {
+        my ($failureReason,$targetAccountIdFromDb,$targetUserNameFromDb)=@_;
+        my @inducedTraffic;
+        if(defined $failureReason) {
+          return if($hdl->destroyed());
+          @inducedTraffic=sendClient($self,$hdl,['SERVERMSG',"Failed to $action ".($targetUserName//'#'.$targetAccountId).': '.$failureReason],$cmdId);
+          addInducedTraffic(\@inducedTraffic,sendNoCmdUsername($self,$hdl,$cmdName,$targetUserName,$cmdId)) if($isExtCmd);
+        }else{
+          # client may have disconnected, reconnected and even renamed during async processing...
+          my (undef,$r_currentUserInfo)=getOnlineClientData($self,$accountId);
+          return unless(defined $r_currentUserInfo);
+          my $r_existingRelationship=$r_currentUserInfo->{userRelationships}{$targetAccountIdFromDb};
+          if($targetRelationship) {
+            $r_currentUserInfo->{userRelationships}{$targetAccountIdFromDb}={userName => $targetUserNameFromDb, relationship => $targetRelationship};
+          }else{
+            delete $r_currentUserInfo->{userRelationships}{$targetAccountIdFromDb};
+            delete $r_currentUserInfo->{ignoredAccounts}{$targetAccountIdFromDb};
+          }
+          return if($hdl->destroyed()); # do not send command ack if user reconnected
+          @inducedTraffic = $isExtCmd ? sendOkCmdUsername($self,$hdl,$cmdName,$targetUserName,$cmdId) : sendClient($self,$hdl,$r_cmd,$cmdId);
+        }
+        closeClientConnection($self,$hdl,'induced traffic flood')
+            if($inducedTraffic[0] && defined checkInducedTrafficFlood($self,$r_userInfo,@inducedTraffic));
+      },
+      $r_connInfo,$login,$r_userInfo,$targetAccountId,$targetUserName,$targetRelationship,
+    );
+    return;
+  }
+  if(defined $targetAccountId) {
+    my $actionPerformed;
+    if($targetRelationship) {
+      if(defined $targetUserName) {
+        $r_userInfo->{userRelationships}{$targetAccountId}={userName => $targetUserName, relationship => $targetRelationship};
+        $actionPerformed=1;
+      }
+    }else{
+      delete $r_userInfo->{userRelationships}{$targetAccountId};
+      delete $r_userInfo->{ignoredAccounts}{$targetAccountId};
+      $actionPerformed=1;
+    }
+    return $isExtCmd ? sendOkCmdUsername($self,$hdl,$cmdName,$targetUserName,$cmdId) : sendClient($self,$hdl,$r_cmd,$cmdId)
+        if($actionPerformed);
+  }
+  my @inducedTraffic=sendClient($self,$hdl,['SERVERMSG',"Cannot $action offline user, feature is not supported by this server"],$cmdId);
+  addInducedTraffic(\@inducedTraffic,sendNoCmdUsername($self,$hdl,$cmdName,$targetUserName,$cmdId)) if($isExtCmd);
+  return @inducedTraffic;
+}
+
 sub hFriendRequest {
   my ($self,$hdl,$r_connInfo,$login,$r_userInfo,$r_cmd,$cmdId)=@_;
-  my (undef,@tagParamDefs)=@{$r_cmd};
-  my ($r_tagParams,$paramError)=parseTagParamDefs(\@tagParamDefs,['userName','msg']);
-  return closeClientConnection($self,$hdl,'protocol error','invalid FRIENDREQUEST parameter: '.$paramError)
-      if(defined $paramError);
-  my ($userName,$msg)=@{$r_tagParams}{qw'userName msg'};
-  return closeClientConnection($self,$hdl,'protocol error','missing FRIENDREQUEST parameter: userName')
-      unless(defined $userName);
-  return closeClientConnection($self,$hdl,'protocol error','invalid FRIENDREQUEST parameter')
-      unless($userName =~ REGEX_USERNAME
-             && (! defined $msg || length($msg) < 255));
-  return sendClient($self,$hdl,['SERVERMSG','Cannot send friend request, feature is not supported by this server'],$cmdId)
-      unless(exists $self->{friendSvc}{FRIENDREQUEST});
-  return sendClient($self,$hdl,['SERVERMSG','Cannot send friend request to yourself'],$cmdId)
-      if($login eq $userName);
   my $accountId=$r_userInfo->{accountId};
-  return sendClient($self,$hdl,['SERVERMSG','Cannot send friend request, this requires accountId feature which is not supported by this server'],$cmdId)
-      unless($accountId);
-  if(exists $self->{users}{$userName}) {
-    my $r_friendUserInfo=$self->{users}{$userName};
-    my $friendAccountId=$r_friendUserInfo->{accountId};
-    return sendClient($self,$hdl,['SERVERMSG','Cannot send friend request, this requires accountId feature which is not fully supported by this server'],$cmdId)
-        unless($friendAccountId);
-    return sendClient($self,$hdl,['SERVERMSG','Failed to send friend request to '.$userName.': already friend'],$cmdId)
-        if(exists $r_userInfo->{friendAccounts}{$friendAccountId});
-    return sendClient($self,$hdl,['SERVERMSG','Failed to send friend request to '.$userName.': you already have an incoming friend request from this user, use ACCEPTFRIENDREQUEST instead'],$cmdId)
-        if(exists $r_userInfo->{friendRequestsIn}{$friendAccountId});
-    return if(exists $r_friendUserInfo->{friendRequestsIn}{$accountId} || exists $r_friendUserInfo->{ignoredAccounts}{$accountId});
-    return sendClient($self,$hdl,['SERVERMSG','Failed to send friend request to '.$userName.': user has reached maximum number of friends and friend requests'],$cmdId)
-      if($self->{maxFriendsByAccount} && keys(%{$r_friendUserInfo->{friendAccounts}}) + keys(%{$r_friendUserInfo->{friendRequestsIn}}) + keys(%{$r_friendUserInfo->{friendRequestsOut}}) >= $self->{maxFriendsByAccount});
+  my ($cmdName,@cmdParams)=@{$r_cmd};
+  my ($protocolError,$failureReason,$isExtCmd,$friendUserName,$friendAccountId)=checkRelationshipCmdParams($self,$login,$accountId,$cmdName,\@cmdParams,1,'msg');
+  return closeClientConnection($self,$hdl,'protocol error',$protocolError)
+      if(defined $protocolError);
+  if(! defined $failureReason) {
+    if(! exists $self->{userRelationshipSvc}{requestFriendship}) {
+      $failureReason='feature is not supported by this server';
+    }elsif($self->{maxFriendsByAccount} && keys(%{$r_userInfo->{friendAccounts}}) + keys(%{$r_userInfo->{friendshipRequestsIn}}) + keys(%{$r_userInfo->{friendshipRequestsOut}}) >= $self->{maxFriendsByAccount}) {
+      $failureReason='maximum number of friends and friend requests reached';
+    }elsif(defined $friendAccountId) {
+      if(exists $r_userInfo->{friendAccounts}{$friendAccountId}) {
+        $failureReason='already friend with '.($friendUserName//$r_userInfo->{friendAccounts}{$friendAccountId});
+      }elsif(exists $r_userInfo->{friendshipRequestsIn}{$friendAccountId}) {
+        $failureReason='you already have an incoming friend request from '.($friendUserName//$r_userInfo->{friendshipRequestsIn}{$friendAccountId});
+      }elsif(exists $r_userInfo->{friendshipRequestsOut}{$friendAccountId}) {
+        return unless($isExtCmd); # Original Spring lobby protocol hides duplicate/ignored requests (lobby protocol extension allows listing/cancelling outgoing requests, so ignored requests cannot be hidden)
+        $failureReason='you already have an outgoing friend request for '.($friendUserName//$r_userInfo->{friendshipRequestsOut}{$friendAccountId});
+      }elsif(defined $friendUserName) { # $friendAccountId AND $friendUserName defined => user is online
+        my $r_friendUserInfo=$self->{users}{$friendUserName};
+        if(exists $r_friendUserInfo->{ignoredAccounts}{$accountId}) {
+          return unless($isExtCmd);
+          $failureReason='you are ignored by '.$friendUserName;
+        }elsif($self->{maxFriendsByAccount} && keys(%{$r_friendUserInfo->{friendAccounts}}) + keys(%{$r_friendUserInfo->{friendshipRequestsIn}}) + keys(%{$r_friendUserInfo->{friendshipRequestsOut}}) >= $self->{maxFriendsByAccount}) {
+          $failureReason=$friendUserName.' has already reached the maximum number of friends and friend requests';
+        }
+      }
+    }
   }
-  return sendClient($self,$hdl,['SERVERMSG','Cannot send friend request: maximum number of friends and friend requests reached'],$cmdId)
-      if($self->{maxFriendsByAccount} && keys(%{$r_userInfo->{friendAccounts}}) + keys(%{$r_userInfo->{friendRequestsIn}}) + keys(%{$r_userInfo->{friendRequestsOut}}) >= $self->{maxFriendsByAccount});
-  $self->{friendSvc}{FRIENDREQUEST}(
+  return sendClient($self,
+                    $hdl,
+                    $isExtCmd ? ['s.user.add_friend',$friendAccountId,'failure',$failureReason] : ['SERVERMSG','Cannot send friend request, '.$failureReason],
+                    $cmdId)
+      if(defined $failureReason);
+  $self->{userRelationshipSvc}{requestFriendship}(
     sub {
-      my ($failedReason,$friendAccountId)=@_;
+      my ($failureReason,$friendAccountIdFromDb,$friendUserNameFromDb)=@_;
       my @inducedTraffic;
-      if(defined $failedReason) {
+      if(defined $failureReason) {
         return if($hdl->destroyed());
-        @inducedTraffic=sendClient($self,$hdl,['SERVERMSG','Failed to send friend request to '.$userName.': '.$failedReason],$cmdId) unless($failedReason eq '');
+        my @failureCmd;
+        if(ref $failureReason eq 'SCALAR') {
+          @failureCmd=('s.user.add_friend',$friendAccountId,'failure',$$failureReason) if($isExtCmd);
+        }else{
+          @failureCmd = $isExtCmd ? ('s.user.add_friend',$friendAccountId,'failure',$failureReason) : ('SERVERMSG','Failed to send friend request to '.($friendUserName//'#'.$friendAccountId).': '.$failureReason);
+        }
+        @inducedTraffic=sendClient($self,$hdl,\@failureCmd,$cmdId) if(@failureCmd);
       }else{
         # clients may have disconnected, reconnected and even renamed during async processing...
-        my ($friendUserName,$r_friendUserInfo)=getOnlineClientData($self,$friendAccountId);
-        $friendUserName//=$userName;
         my ($currentLogin,$r_currentUserInfo)=getOnlineClientData($self,$accountId);
         $currentLogin//=$login;
-        # we don't check ignoredAccounts here to keep consistency with DB (avoid race conditions)
+        my ($currentFriendUserName,$r_currentFriendUserInfo)=getOnlineClientData($self,$friendAccountIdFromDb);
+        $currentFriendUserName//=$friendUserNameFromDb;
+        # do not check ignoredAccounts here to keep consistency with DB (avoid race conditions)
         if(defined $r_currentUserInfo
-           && ! exists $r_currentUserInfo->{friendAccounts}{$friendAccountId}
-           && ! exists $r_currentUserInfo->{friendRequestsOut}{$friendAccountId}
-           && ! exists $r_currentUserInfo->{friendRequestsIn}{$friendAccountId}) {
-          my %friendData=(userName => $friendUserName);
-          $friendData{msg}=$msg if(defined $msg);
-          $r_currentUserInfo->{friendRequestsOut}{$friendAccountId}=\%friendData;
+           && ! exists $r_currentUserInfo->{friendAccounts}{$friendAccountIdFromDb}
+           && ! exists $r_currentUserInfo->{friendshipRequestsOut}{$friendAccountIdFromDb}
+           && ! exists $r_currentUserInfo->{friendshipRequestsIn}{$friendAccountIdFromDb}) {
+          $r_currentUserInfo->{friendshipRequestsOut}{$friendAccountIdFromDb}=$currentFriendUserName;
+          @inducedTraffic=sendClient($self,$hdl,['s.user.add_friend',$friendAccountIdFromDb,'success'],$cmdId)
+              if($isExtCmd && ! $hdl->destroyed()); # do not send command ack if user reconnected
         }
-        if(defined $r_friendUserInfo
-           && ! exists $r_friendUserInfo->{friendAccounts}{$accountId}
-           && ! exists $r_friendUserInfo->{friendRequestsOut}{$accountId}
-           && ! exists $r_friendUserInfo->{friendRequestsIn}{$accountId}) {
-          my %friendData=(userName => $currentLogin);
-          $friendData{msg}=$msg if(defined $msg);
-          $r_friendUserInfo->{friendRequestsIn}{$accountId}=\%friendData;
-          my @tagParams=('userName='.$currentLogin);
-          if($r_friendUserInfo->{lobbyClientType} != CLI_SKYLOBBY) {
-            push(@tagParams,'msg='.$msg) if(defined $msg);
-            push(@tagParams,'accountId='.$accountId);
+        if(defined $r_currentFriendUserInfo
+           && ! exists $r_currentFriendUserInfo->{friendAccounts}{$accountId}
+           && ! exists $r_currentFriendUserInfo->{friendshipRequestsOut}{$accountId}
+           && ! exists $r_currentFriendUserInfo->{friendshipRequestsIn}{$accountId}) {
+          $r_currentFriendUserInfo->{friendshipRequestsIn}{$accountId}=$currentLogin;
+          my @friendReqCmd;
+          if($r_currentFriendUserInfo->{lobbyClientType} == CLI_CHOBBY) {
+            @friendReqCmd=('s.user.new_incoming_friend_request',$accountId);
+          }else{
+            @friendReqCmd=('FRIENDREQUEST','userName='.$currentLogin);
+            push(@friendReqCmd,'accountId='.$accountId) unless($r_currentFriendUserInfo->{lobbyClientType} == CLI_SKYLOBBY);
           }
-          @inducedTraffic=sendUser($self,$friendUserName,['FRIENDREQUEST',@tagParams]);
+          addInducedTraffic(\@inducedTraffic,sendUser($self,$currentFriendUserName,\@friendReqCmd));
         }
         return if($hdl->destroyed());
       }
@@ -3450,63 +3700,138 @@ sub hFriendRequest {
           if($inducedTraffic[0] && defined checkInducedTrafficFlood($self,$r_userInfo,@inducedTraffic));
       
     },
-    $r_connInfo,$login,$r_userInfo,$userName,$msg,
+    $r_connInfo,$login,$r_userInfo,$friendAccountId,$friendUserName,
+  );
+  return;
+}
+
+# No command for this in original Spring lobby protocol
+sub hCancelFriendRequest {
+  my ($self,$hdl,$r_connInfo,$login,$r_userInfo,$r_cmd,$cmdId)=@_;
+  my $accountId=$r_userInfo->{accountId};
+  my ($cmdName,@cmdParams)=@{$r_cmd};
+  my ($protocolError,$failureReason,$isExtCmd,$friendUserName,$friendAccountId)=checkRelationshipCmdParams($self,$login,$accountId,$cmdName,\@cmdParams,1);
+  return closeClientConnection($self,$hdl,'protocol error',$protocolError)
+      if(defined $protocolError);
+  if(! defined $failureReason) {
+    if(! exists $self->{userRelationshipSvc}{cancelFriendshipRequest}) {
+      $failureReason='feature is not supported by this server';
+    }elsif(defined $friendAccountId) {
+      if(! exists $r_userInfo->{friendshipRequestsOut}{$friendAccountId}) {
+        return unless($isExtCmd); # Original Spring lobby protocol hides duplicate/ignored requests (lobby protocol extension allows listing/cancelling outgoing requests, so ignored requests cannot be hidden)
+        $failureReason='no outgoing friend request for '.($friendUserName//'#'.$friendAccountId);
+      }elsif(exists $r_userInfo->{friendAccounts}{$friendAccountId}) {
+        delete $r_userInfo->{friendshipRequestsOut}{$friendAccountId};
+        return;
+      }
+    }
+  }
+  return sendClient($self,
+                    $hdl,
+                    $isExtCmd ? ['s.user.rescind_friend_request',$friendAccountId,'failure',$failureReason] : ['SERVERMSG','Cannot cancel friend request, '.$failureReason],
+                    $cmdId)
+      if(defined $failureReason);
+  $self->{userRelationshipSvc}{cancelFriendshipRequest}(
+    sub {
+      my ($failureReason,$friendAccountIdFromDb,$friendUserNameFromDb)=@_;
+      my @inducedTraffic;
+      if(defined $failureReason) {
+        return if($hdl->destroyed());
+        my @failureCmd;
+        if(ref $failureReason eq 'SCALAR') {
+          @failureCmd=('s.user.rescind_friend_request',$friendAccountId,'failure',$$failureReason) if($isExtCmd);
+        }else{
+          @failureCmd = $isExtCmd ? ('s.user.rescind_friend_request',$friendAccountId,'failure',$failureReason) : ('SERVERMSG','Failed to cancel friend request to '.($friendUserName//'#'.$friendAccountId).': '.$failureReason);
+        }
+        @inducedTraffic=sendClient($self,$hdl,\@failureCmd,$cmdId) if(@failureCmd);
+      }else{
+        # clients may have disconnected, reconnected and even renamed during async processing...
+        my (undef,$r_currentUserInfo)=getOnlineClientData($self,$accountId);
+        my ($currentFriendUserName,$r_currentFriendUserInfo)=getOnlineClientData($self,$friendAccountIdFromDb);
+        if(defined $r_currentUserInfo && exists $r_currentUserInfo->{friendshipRequestsOut}{$friendAccountIdFromDb}) {
+          delete $r_currentUserInfo->{friendshipRequestsOut}{$friendAccountIdFromDb};
+          @inducedTraffic=sendClient($self,$hdl,['s.user.rescind_friend_request',$friendAccountIdFromDb,'success'],$cmdId)
+              if($isExtCmd && ! $hdl->destroyed()); # do not send command ack if user reconnected
+        }
+        if(defined $r_currentFriendUserInfo && exists $r_currentFriendUserInfo->{friendshipRequestsIn}{$accountId}) {
+          delete $r_currentFriendUserInfo->{friendshipRequestsIn}{$accountId};
+          addInducedTraffic(\@inducedTraffic,sendUser($self,$currentFriendUserName,['s.user.friend_request_rescinded',$accountId]))
+              if($r_currentFriendUserInfo->{lobbyClientType} == CLI_CHOBBY);
+        }
+        return if($hdl->destroyed());
+      }
+      closeClientConnection($self,$hdl,'induced traffic flood')
+          if($inducedTraffic[0] && defined checkInducedTrafficFlood($self,$r_userInfo,@inducedTraffic));
+    },
+    $r_connInfo,$login,$r_userInfo,$friendAccountId,$friendUserName,
   );
   return;
 }
 
 sub hAcceptFriendRequest {
   my ($self,$hdl,$r_connInfo,$login,$r_userInfo,$r_cmd,$cmdId)=@_;
-  my (undef,@tagParamDefs)=@{$r_cmd};
-  my ($r_tagParams,$paramError)=parseTagParamDefs(\@tagParamDefs,['userName']);
-  return closeClientConnection($self,$hdl,'protocol error','invalid ACCEPTFRIENDREQUEST parameter: '.$paramError)
-      if(defined $paramError);
-  my $userName=$r_tagParams->{userName};
-  return closeClientConnection($self,$hdl,'protocol error','missing ACCEPTFRIENDREQUEST parameter: userName')
-      unless(defined $userName);
-  return closeClientConnection($self,$hdl,'protocol error','invalid ACCEPTFRIENDREQUEST parameter')
-      unless($userName =~ REGEX_USERNAME);
-  return sendClient($self,$hdl,['SERVERMSG','Cannot accept friend request, feature is not supported by this server'],$cmdId)
-      unless(exists $self->{friendSvc}{ACCEPTFRIENDREQUEST});
   my $accountId=$r_userInfo->{accountId};
-  return sendClient($self,$hdl,['SERVERMSG','Cannot accept friend request, this requires accountId feature which is not supported by this server'],$cmdId)
-      unless($accountId);
-  if(exists $self->{users}{$userName}) {
-    my $friendAccountId=$self->{users}{$userName}{accountId};
-    return sendClient($self,$hdl,['SERVERMSG','Cannot accept friend request, this requires accountId feature which is not fully supported by this server'],$cmdId)
-        unless($friendAccountId);
-    return sendClient($self,$hdl,['SERVERMSG','Failed to accept friend request, no pending request from '.$userName],$cmdId)
-        unless(exists $r_userInfo->{friendRequestsIn}{$friendAccountId});
-    if(exists $r_userInfo->{friendAccounts}{$friendAccountId}) {
-      delete $r_userInfo->{friendRequestsIn}{$friendAccountId};
-      return;
+  my ($cmdName,@cmdParams)=@{$r_cmd};
+  my ($protocolError,$failureReason,$isExtCmd,$friendUserName,$friendAccountId)=checkRelationshipCmdParams($self,$login,$accountId,$cmdName,\@cmdParams,1);
+  return closeClientConnection($self,$hdl,'protocol error',$protocolError)
+      if(defined $protocolError);
+  if(! defined $failureReason) {
+    if(! exists $self->{userRelationshipSvc}{acceptFriendshipRequest}) {
+      $failureReason='feature is not supported by this server';
+    }elsif(defined $friendAccountId) {
+      if(! exists $r_userInfo->{friendshipRequestsIn}{$friendAccountId}) {
+        $failureReason='no pending friend request from '.($friendUserName//'#'.$friendAccountId);
+      }elsif(exists $r_userInfo->{friendAccounts}{$friendAccountId}) {
+        delete $r_userInfo->{friendshipRequestsIn}{$friendAccountId};
+        return;
+      }
     }
   }
-  $self->{friendSvc}{ACCEPTFRIENDREQUEST}(
+  return sendClient($self,
+                    $hdl,
+                    $isExtCmd ? ['s.user.accept_friend_request',$friendAccountId,'failure',$failureReason] : ['SERVERMSG','Cannot accept friend request, '.$failureReason],
+                    $cmdId)
+      if(defined $failureReason);
+  $self->{userRelationshipSvc}{acceptFriendshipRequest}(
     sub {
-      my ($failedReason,$friendAccountId)=@_;
+      my ($failureReason,$friendAccountIdFromDb,$friendUserNameFromDb)=@_;
       my @inducedTraffic;
-      if(defined $failedReason) {
+      if(defined $failureReason) {
         return if($hdl->destroyed());
-        @inducedTraffic=sendClient($self,$hdl,['SERVERMSG','Failed to accept friend request from '.$userName.': '.$failedReason],$cmdId);
+        @inducedTraffic=sendClient($self,
+                                   $hdl,
+                                   $isExtCmd ? ['s.user.accept_friend_request',$friendAccountId,'failure',$failureReason] : ['SERVERMSG','Failed to accept friend request from '.($friendUserName//'#'.$friendAccountId).': '.$failureReason],
+                                   $cmdId);
       }else{
         # clients may have disconnected, reconnected and even renamed during async processing...
-        my ($friendUserName,$r_friendUserInfo)=getOnlineClientData($self,$friendAccountId);
-        $friendUserName//=$userName;
         my ($currentLogin,$r_currentUserInfo)=getOnlineClientData($self,$accountId);
         $currentLogin//=$login;
-        if(defined $r_currentUserInfo) {
-          delete $r_currentUserInfo->{friendRequestsIn}{$friendAccountId};
-          if(! exists $r_currentUserInfo->{friendAccounts}{$friendAccountId}) {
-            $r_currentUserInfo->{friendAccounts}{$friendAccountId}=$friendUserName;
-            @inducedTraffic=sendUser($self,$currentLogin,['FRIEND','userName='.$friendUserName,$r_currentUserInfo->{lobbyClientType} == CLI_SKYLOBBY ? () : 'accountId='.$friendAccountId]);
+        my ($currentFriendUserName,$r_currentFriendUserInfo)=getOnlineClientData($self,$friendAccountIdFromDb);
+        $currentFriendUserName//=$friendUserNameFromDb;
+        if(defined $r_currentUserInfo && exists $r_currentUserInfo->{friendshipRequestsIn}{$friendAccountIdFromDb}) {
+          delete $r_currentUserInfo->{friendshipRequestsIn}{$friendAccountIdFromDb};
+          if(! exists $r_currentUserInfo->{friendAccounts}{$friendAccountIdFromDb}) {
+            $r_currentUserInfo->{friendAccounts}{$friendAccountIdFromDb}=$currentFriendUserName;
+            if($isExtCmd) {
+              @inducedTraffic=sendClient($self,$hdl,['s.user.accept_friend_request',$friendAccountIdFromDb,'success'],$cmdId)
+                  unless($hdl->destroyed()); # do not send command ack if user reconnected
+            }else{
+              @inducedTraffic=sendUser($self,$currentLogin,['FRIEND','userName='.$currentFriendUserName,$r_currentUserInfo->{lobbyClientType} == CLI_SKYLOBBY ? () : 'accountId='.$friendAccountIdFromDb]);
+            }
           }
         }
-        if(defined $r_friendUserInfo) {
-          delete $r_friendUserInfo->{friendRequestsOut}{$accountId};
-          if(! exists $r_friendUserInfo->{friendAccounts}{$accountId}) {
-            $r_friendUserInfo->{friendAccounts}{$accountId}=$currentLogin;
-            addInducedTraffic(\@inducedTraffic,sendUser($self,$friendUserName,['FRIEND','userName='.$currentLogin,$r_friendUserInfo->{lobbyClientType} == CLI_SKYLOBBY ? () : 'accountId='.$accountId]));
+        if(defined $r_currentFriendUserInfo && exists $r_currentFriendUserInfo->{friendshipRequestsOut}{$accountId}) {
+          delete $r_currentFriendUserInfo->{friendshipRequestsOut}{$accountId};
+          if(! exists $r_currentFriendUserInfo->{friendAccounts}{$accountId}) {
+            $r_currentFriendUserInfo->{friendAccounts}{$accountId}=$currentLogin;
+            my @friendCmd;
+            if($r_currentFriendUserInfo->{lobbyClientType} == CLI_CHOBBY) {
+              @friendCmd=('s.user.friend_request_accepted',$accountId);
+            }else{
+              @friendCmd=('FRIEND','userName='.$currentLogin);
+              push(@friendCmd,'accountId='.$accountId) unless($r_currentFriendUserInfo->{lobbyClientType} == CLI_SKYLOBBY);
+            }
+            addInducedTraffic(\@inducedTraffic,sendUser($self,$currentFriendUserName,\@friendCmd));
           }
         }
         return if($hdl->destroyed());
@@ -3514,200 +3839,283 @@ sub hAcceptFriendRequest {
       closeClientConnection($self,$hdl,'induced traffic flood')
           if($inducedTraffic[0] && defined checkInducedTrafficFlood($self,$r_userInfo,@inducedTraffic));
     },
-    $r_connInfo,$login,$r_userInfo,$userName,
+    $r_connInfo,$login,$r_userInfo,$friendAccountId,$friendUserName,
   );
   return;
 }
 
 sub hDeclineFriendRequest {
   my ($self,$hdl,$r_connInfo,$login,$r_userInfo,$r_cmd,$cmdId)=@_;
-  my (undef,@tagParamDefs)=@{$r_cmd};
-  my ($r_tagParams,$paramError)=parseTagParamDefs(\@tagParamDefs,['userName']);
-  return closeClientConnection($self,$hdl,'protocol error','invalid DECLINEFRIENDREQUEST parameter: '.$paramError)
-      if(defined $paramError);
-  my $userName=$r_tagParams->{userName};
-  return closeClientConnection($self,$hdl,'protocol error','missing DECLINEFRIENDREQUEST parameter: userName')
-      unless(defined $userName);
-  return closeClientConnection($self,$hdl,'protocol error','invalid DECLINEFRIENDREQUEST parameter')
-      unless($userName =~ REGEX_USERNAME);
-  return sendClient($self,$hdl,['SERVERMSG','Cannot decline friend request, feature is not supported by this server'],$cmdId)
-      unless(exists $self->{friendSvc}{DECLINEFRIENDREQUEST});
   my $accountId=$r_userInfo->{accountId};
-  return sendClient($self,$hdl,['SERVERMSG','Cannot decline friend request, this requires accountId feature which is not supported by this server'],$cmdId)
-      unless($accountId);
-  if(exists $self->{users}{$userName}) {
-    my $friendAccountId=$self->{users}{$userName}{accountId};
-    return sendClient($self,$hdl,['SERVERMSG','Cannot decline friend request, this requires accountId feature which is not fully supported by this server'],$cmdId)
-        unless($friendAccountId);
-    return sendClient($self,$hdl,['SERVERMSG','Failed to decline friend request, no pending request from '.$userName],$cmdId)
-        unless(exists $r_userInfo->{friendRequestsIn}{$friendAccountId});
-    if(exists $r_userInfo->{friendAccounts}{$friendAccountId}) {
-      delete $r_userInfo->{friendRequestsIn}{$friendAccountId};
-      return;
+  my ($cmdName,@cmdParams)=@{$r_cmd};
+  my ($protocolError,$failureReason,$isExtCmd,$friendUserName,$friendAccountId)=checkRelationshipCmdParams($self,$login,$accountId,$cmdName,\@cmdParams,1);
+  return closeClientConnection($self,$hdl,'protocol error',$protocolError)
+      if(defined $protocolError);
+  if(! defined $failureReason) {
+    if(! exists $self->{userRelationshipSvc}{declineFriendshipRequest}) {
+      $failureReason='feature is not supported by this server';
+    }elsif(defined $friendAccountId) {
+      if(! exists $r_userInfo->{friendshipRequestsIn}{$friendAccountId}) {
+        $failureReason='no pending friend request from '.($friendUserName//'#'.$friendAccountId);
+      }elsif(exists $r_userInfo->{friendAccounts}{$friendAccountId}) {
+        delete $r_userInfo->{friendshipRequestsIn}{$friendAccountId};
+        return;
+      }
     }
   }
-  $self->{friendSvc}{DECLINEFRIENDREQUEST}(
+  return sendClient($self,
+                    $hdl,
+                    $isExtCmd ? ['s.user.decline_friend_request',$friendAccountId,'failure',$failureReason] : ['SERVERMSG','Cannot decline friend request, '.$failureReason],
+                    $cmdId)
+      if(defined $failureReason);
+  $self->{userRelationshipSvc}{declineFriendshipRequest}(
     sub {
-      my ($failedReason,$friendAccountId)=@_;
-      if(defined $failedReason) {
-        return if($hdl->destroyed());
-        my @inducedTraffic=sendClient($self,$hdl,['SERVERMSG','Failed to decline friend request from '.$userName.': '.$failedReason],$cmdId);
-        closeClientConnection($self,$hdl,'induced traffic flood')
-            if($inducedTraffic[0] && defined checkInducedTrafficFlood($self,$r_userInfo,@inducedTraffic));
-      }else{
-        # clients may have disconnected, reconnected and even renamed during async processing...
-        my (undef,$r_friendUserInfo)=getOnlineClientData($self,$friendAccountId);
-        delete $r_friendUserInfo->{friendRequestsOut}{$accountId} if(defined $r_friendUserInfo);
-        my (undef,$r_currentUserInfo)=getOnlineClientData($self,$accountId);
-        delete $r_currentUserInfo->{friendRequestsIn}{$friendAccountId} if(defined $r_currentUserInfo);
-      }
-    },
-    $r_connInfo,$login,$r_userInfo,$userName,
-  );
-  return;
-}
-
-sub hUnfriend {
-  my ($self,$hdl,$r_connInfo,$login,$r_userInfo,$r_cmd,$cmdId)=@_;
-  my (undef,@tagParamDefs)=@{$r_cmd};
-  my ($r_tagParams,$paramError)=parseTagParamDefs(\@tagParamDefs,['userName']);
-  return closeClientConnection($self,$hdl,'protocol error','invalid UNFRIEND parameter: '.$paramError)
-      if(defined $paramError);
-  my $userName=$r_tagParams->{userName};
-  return closeClientConnection($self,$hdl,'protocol error','missing UNFRIEND parameter: userName')
-      unless(defined $userName);
-  return closeClientConnection($self,$hdl,'protocol error','invalid UNFRIEND parameter')
-      unless($userName =~ REGEX_USERNAME);
-  return sendClient($self,$hdl,['SERVERMSG','Cannot unfriend, feature is not supported by this server'],$cmdId)
-      unless(exists $self->{friendSvc}{UNFRIEND});
-  my $accountId=$r_userInfo->{accountId};
-  return sendClient($self,$hdl,['SERVERMSG','Cannot unfriend, this requires accountId feature which is not supported by this server'],$cmdId)
-      unless($accountId);
-  if(exists $self->{users}{$userName}) {
-    my $friendAccountId=$self->{users}{$userName}{accountId};
-    return sendClient($self,$hdl,['SERVERMSG','Cannot unfriend, this requires accountId feature which is not fully supported by this server'],$cmdId)
-        unless($friendAccountId);
-    return sendClient($self,$hdl,['SERVERMSG','Failed to unfriend, not friend with '.$userName],$cmdId)
-        unless(exists $r_userInfo->{friendAccounts}{$friendAccountId});
-  }
-  $self->{friendSvc}{UNFRIEND}(
-    sub {
-      my ($failedReason,$friendAccountId)=@_;
+      my ($failureReason,$friendAccountIdFromDb,$friendUserNameFromDb)=@_;
       my @inducedTraffic;
-      if(defined $failedReason) {
+      if(defined $failureReason) {
         return if($hdl->destroyed());
-        @inducedTraffic=sendClient($self,$hdl,['SERVERMSG','Failed to unfriend with '.$userName.': '.$failedReason],$cmdId);
+        @inducedTraffic=sendClient($self,
+                                   $hdl,
+                                   $isExtCmd ? ['s.user.decline_friend_request',$friendAccountId,'failure',$failureReason] : ['SERVERMSG','Failed to decline friend request from '.($friendUserName//'#'.$friendAccountId).': '.$failureReason],
+                                   $cmdId);
       }else{
         # clients may have disconnected, reconnected and even renamed during async processing...
-        my ($friendUserName,$r_friendUserInfo)=getOnlineClientData($self,$friendAccountId);
-        $friendUserName//=$userName;
-        my ($currentLogin,$r_currentUserInfo)=getOnlineClientData($self,$accountId);
-        $currentLogin//=$login;
-        if(defined $r_currentUserInfo && exists $r_currentUserInfo->{friendAccounts}{$friendAccountId}) {
-          delete $r_currentUserInfo->{friendAccounts}{$friendAccountId};
-          @inducedTraffic=sendUser($self,$currentLogin,['UNFRIEND','userName='.$friendUserName,'accountId='.$friendAccountId]);
+        my (undef,$r_currentUserInfo)=getOnlineClientData($self,$accountId);
+        my ($currentFriendUserName,$r_currentFriendUserInfo)=getOnlineClientData($self,$friendAccountIdFromDb);
+        if(defined $r_currentUserInfo && exists $r_currentUserInfo->{friendshipRequestsIn}{$friendAccountIdFromDb}) {
+          delete $r_currentUserInfo->{friendshipRequestsIn}{$friendAccountIdFromDb};
+          @inducedTraffic=sendClient($self,$hdl,['s.user.decline_friend_request',$friendAccountIdFromDb,'success'],$cmdId)
+              if($isExtCmd && ! $hdl->destroyed()); # do not send command ack if user reconnected
         }
-        if(defined $r_friendUserInfo && exists $r_friendUserInfo->{friendAccounts}{$accountId}) {
-          delete $r_friendUserInfo->{friendAccounts}{$accountId};
-          addInducedTraffic(\@inducedTraffic,sendUser($self,$friendUserName,['UNFRIEND','userName='.$currentLogin,'accountId='.$accountId]));
+        if(defined $r_currentFriendUserInfo && exists $r_currentFriendUserInfo->{friendshipRequestsOut}{$accountId}) {
+          delete $r_currentFriendUserInfo->{friendshipRequestsOut}{$accountId};
+          addInducedTraffic(\@inducedTraffic,sendUser($self,$currentFriendUserName,['s.user.friend_request_declined',$accountId]))
+                            if($r_currentFriendUserInfo->{lobbyClientType} == CLI_CHOBBY);
         }
         return if($hdl->destroyed());
       }
       closeClientConnection($self,$hdl,'induced traffic flood')
           if($inducedTraffic[0] && defined checkInducedTrafficFlood($self,$r_userInfo,@inducedTraffic));
     },
-    $r_connInfo,$login,$r_userInfo,$userName,
+    $r_connInfo,$login,$r_userInfo,$friendAccountId,$friendUserName,
+  );
+  return;
+}
+
+sub hUnfriend {
+  my ($self,$hdl,$r_connInfo,$login,$r_userInfo,$r_cmd,$cmdId)=@_;
+  my $accountId=$r_userInfo->{accountId};
+  my ($cmdName,@cmdParams)=@{$r_cmd};
+  my ($protocolError,$failureReason,$isExtCmd,$friendUserName,$friendAccountId)=checkRelationshipCmdParams($self,$login,$accountId,$cmdName,\@cmdParams,1,'msg');
+  return closeClientConnection($self,$hdl,'protocol error',$protocolError)
+      if(defined $protocolError);
+  if(! defined $failureReason) {
+    if(! exists $self->{userRelationshipSvc}{cancelFriendship}) {
+      $failureReason='feature is not supported by this server';
+    }elsif(defined $friendAccountId && ! exists $r_userInfo->{friendAccounts}{$friendAccountId}) {
+      $failureReason='not friend with '.($friendUserName//'#'.$friendAccountId);
+    }
+  }
+  return sendClient($self,
+                    $hdl,
+                    $isExtCmd ? ['s.user.remove_friend',$friendAccountId,'failure',$failureReason] : ['SERVERMSG','Cannot cancel friendship, '.$failureReason],
+                    $cmdId)
+      if(defined $failureReason);
+  $self->{userRelationshipSvc}{cancelFriendship}(
+    sub {
+      my ($failureReason,$friendAccountIdFromDb,$friendUserNameFromDb)=@_;
+      my @inducedTraffic;
+      if(defined $failureReason) {
+        return if($hdl->destroyed());
+        @inducedTraffic=sendClient($self,
+                                   $hdl,
+                                   $isExtCmd ? ['s.user.remove_friend',$friendAccountId,'failure',$failureReason] : ['SERVERMSG','Failed to cancel friendship with '.($friendUserName//'#'.$friendAccountId).': '.$failureReason],
+                                   $cmdId);
+      }else{
+        # clients may have disconnected, reconnected and even renamed during async processing...
+        my ($currentLogin,$r_currentUserInfo)=getOnlineClientData($self,$accountId);
+        $currentLogin//=$login;
+        my ($currentFriendUserName,$r_currentFriendUserInfo)=getOnlineClientData($self,$friendAccountIdFromDb);
+        $currentFriendUserName//=$friendUserNameFromDb;
+        if(defined $r_currentUserInfo && exists $r_currentUserInfo->{friendAccounts}{$friendAccountIdFromDb}) {
+          delete $r_currentUserInfo->{friendAccounts}{$friendAccountIdFromDb};
+          if($isExtCmd) {
+            @inducedTraffic=sendClient($self,$hdl,['s.user.remove_friend',$friendAccountIdFromDb,'success'],$cmdId)
+                unless($hdl->destroyed()); # do not send command ack if user reconnected
+            addInducedTraffic(\@inducedTraffic,sendUser($self,$currentLogin,['s.user.friend_deleted',$friendAccountIdFromDb]));
+          }else{
+            @inducedTraffic=sendUser($self,$currentLogin,['UNFRIEND','userName='.$currentFriendUserName,$r_currentUserInfo->{lobbyClientType} == CLI_SKYLOBBY ? () : 'accountId='.$friendAccountIdFromDb]);
+          }
+        }
+        if(defined $r_currentFriendUserInfo && exists $r_currentFriendUserInfo->{friendAccounts}{$accountId}) {
+          delete $r_currentFriendUserInfo->{friendAccounts}{$accountId};
+          my @unfriendCmd;
+          if($r_currentFriendUserInfo->{lobbyClientType} == CLI_CHOBBY) {
+            @unfriendCmd=('s.user.friend_deleted',$accountId);
+          }else{
+            @unfriendCmd=('UNFRIEND','userName='.$currentLogin);
+            push(@unfriendCmd,'accountId='.$accountId) unless($r_currentFriendUserInfo->{lobbyClientType} == CLI_SKYLOBBY);
+          }
+          addInducedTraffic(\@inducedTraffic,sendUser($self,$currentFriendUserName,\@unfriendCmd));
+        }
+        return if($hdl->destroyed());
+      }
+      closeClientConnection($self,$hdl,'induced traffic flood')
+          if($inducedTraffic[0] && defined checkInducedTrafficFlood($self,$r_userInfo,@inducedTraffic));
+    },
+    $r_connInfo,$login,$r_userInfo,$friendAccountId,$friendUserName,
   );
   return;
 }
 
 sub hFriendRequestList {
   my ($self,$hdl,$r_connInfo,$login,$r_userInfo,$r_cmd,$cmdId)=@_;
-  my (undef,@tagParamDefs)=@{$r_cmd};
-  my ($r_tagParams,$paramError)=parseTagParamDefs(\@tagParamDefs,['type']);
-  return closeClientConnection($self,$hdl,'protocol error','invalid FRIENDREQUESTLIST parameter: '.$paramError)
-      if(defined $paramError);
-  my $isOutgoingRequests;
-  my $type=$r_tagParams->{type};
-  if(defined $type) {
-    if(lc($type) eq 'in') {
-      $type='in';
-    }elsif(lc($type) eq 'out') {
-      $isOutgoingRequests=1;
-      $type='out';
-    }else{
-      closeClientConnection($self,$hdl,'protocol error','invalid FRIENDREQUESTLIST parameter: type');
-    }
-  }
-  my $includeOptionalTagParams = $r_userInfo->{lobbyClientType} != CLI_SKYLOBBY;
-  if(exists $self->{friendSvc}{FRIENDREQUESTLIST}) {
-    $self->{friendSvc}{FRIENDREQUESTLIST}(
+  my $includeAccountId = $r_userInfo->{lobbyClientType} != CLI_SKYLOBBY;
+  if(exists $self->{userRelationshipSvc}{list}) {
+    $self->{userRelationshipSvc}{list}(
       sub {
         return if($hdl->destroyed());
-        my $r_friendRequestList=shift;
-        my @friendCmds=(['FRIENDREQUESTLISTBEGIN']);
-        if(defined $r_friendRequestList) {
-          foreach my $r_friendData (@{$r_friendRequestList}) {
-            my @tagParams=('userName='.$r_friendData->{userName});
-            map {push(@tagParams,$_.'='.$r_friendData->{$_}) if(defined $r_friendData->{$_})} (qw'msg accountId type')
-                if($includeOptionalTagParams);
-            push(@friendCmds,['FRIENDREQUESTLIST',@tagParams]);
-          }
-        }
-        push(@friendCmds,['FRIENDREQUESTLISTEND']);
+        my $r_friendshipRequests=$_[0]{friendshipRequestsIn}//{};
+        my @friendCmds=(
+          ['FRIENDREQUESTLISTBEGIN'],
+          (map {['FRIENDREQUESTLIST','userName='.($self->{accounts}{$_}//$r_friendshipRequests->{$_}),$includeAccountId ? 'accountId='.$_ : ()]} (keys %{$r_friendshipRequests})),
+          ['FRIENDREQUESTLISTEND'],
+            );
         my @inducedTraffic=sendClientMulti($self,$hdl,\@friendCmds,$cmdId);
         closeClientConnection($self,$hdl,'induced traffic flood')
             if($inducedTraffic[0] && defined checkInducedTrafficFlood($self,$r_userInfo,@inducedTraffic));
       },
-      $r_connInfo,$login,$r_userInfo,$isOutgoingRequests);
+      $r_connInfo,$login,$r_userInfo,USR_REL_LIST_FRIEND_REQ_IN);
     return;
   }else{
-    my $friendRequestsField = $isOutgoingRequests ? 'friendRequestsOut' : 'friendRequestsIn';
-    my @friendCmds=(['FRIENDREQUESTLISTBEGIN']);
-    foreach my $friendAccountId (sort keys %{$r_userInfo->{$friendRequestsField}}) {
-      my $r_friendData=$r_userInfo->{$friendRequestsField}{$friendAccountId};
-      my @tagParams=('userName='.$r_friendData->{userName});
-      if($includeOptionalTagParams) {
-        push(@tagParams,'msg='.$r_friendData->{msg}) if(defined $r_friendData->{msg});
-        push(@tagParams,'accountId='.$friendAccountId);
-        push(@tagParams,'type='.$type) if(defined $type);
-      }
-      push(@friendCmds,['FRIENDREQUESTLIST',@tagParams]);
-    }
-    push(@friendCmds,['FRIENDREQUESTLISTEND']);
+    my @friendCmds=(
+      ['FRIENDREQUESTLISTBEGIN'],
+      (map {['FRIENDREQUESTLIST','userName='.($self->{accounts}{$_}//$r_userInfo->{friendshipRequestsIn}{$_}),$includeAccountId ? 'accountId='.$_ : ()]} (keys %{$r_userInfo->{friendshipRequestsIn}})),
+      ['FRIENDREQUESTLISTEND'],
+        );
     return sendClientMulti($self,$hdl,\@friendCmds,$cmdId);
   }
 }
 
 sub hFriendList {
   my ($self,$hdl,$r_connInfo,$login,$r_userInfo,$r_cmd,$cmdId)=@_;
-  my $includeOptionalTagParams = $r_userInfo->{lobbyClientType} != CLI_SKYLOBBY;
-  if(exists $self->{friendSvc}{FRIENDLIST}) {
-    $self->{friendSvc}{FRIENDLIST}(
+  my $includeAccountId = $r_userInfo->{lobbyClientType} != CLI_SKYLOBBY;
+  if(exists $self->{userRelationshipSvc}{list}) {
+    $self->{userRelationshipSvc}{list}(
       sub {
         return if($hdl->destroyed());
-        my $r_friendList=shift;
-        my @friendCmds=(['FRIENDLISTBEGIN']);
-        if(defined $r_friendList) {
-          foreach my $r_friendData (@{$r_friendList}) {
-            my @tagParams=('userName='.$r_friendData->{userName});
-            push(@tagParams,'accountId='.$r_friendData->{accountId}) if($includeOptionalTagParams && defined $r_friendData->{accountId});
-            push(@friendCmds,['FRIENDLIST',@tagParams]);
-          }
-        }
-        push(@friendCmds,['FRIENDLISTEND']);
+        my $r_friends=$_[0]{friends}//{};
+        my @friendCmds=(
+          ['FRIENDLISTBEGIN'],
+          (map {['FRIENDLIST','userName='.($self->{accounts}{$_}//$r_friends->{$_}),$includeAccountId ? 'accountId='.$_ : ()]} (keys %{$r_friends})),
+          ['FRIENDLISTEND'],
+            );
         my @inducedTraffic=sendClientMulti($self,$hdl,\@friendCmds,$cmdId);
+        closeClientConnection($self,$hdl,'induced traffic flood')
+            if($inducedTraffic[0] && defined checkInducedTrafficFlood($self,$r_userInfo,@inducedTraffic));
+      },
+      $r_connInfo,$login,$r_userInfo,USR_REL_LIST_FRIEND);
+    return;
+  }else{
+    my @friendCmds=(
+      ['FRIENDLISTBEGIN'],
+      (map {['FRIENDLIST','userName='.($self->{accounts}{$_}//$r_userInfo->{friendAccounts}{$_}),$includeAccountId ? 'accountId='.$_ : ()]} (keys %{$r_userInfo->{friendAccounts}})),
+      ['FRIENDLISTEND'],
+        );
+    return sendClientMulti($self,$hdl,\@friendCmds,$cmdId);
+  }
+}
+
+sub hListUserRelationships {
+  my ($self,$hdl,$r_connInfo,$login,$r_userInfo,$r_cmd,$cmdId)=@_;
+  if(0 && exists $self->{userRelationshipSvc}{list}) {
+    # disabled for now as the only lobby command using it (c.user.list_relationships) does not return the user names, so DB access isn't needed
+    $self->{userRelationshipSvc}{list}(
+      sub {
+        return if($hdl->destroyed());
+        my $r_userRelationships=shift;
+        my %userRelationships = map {$_ => [map {$_+0} keys %{$r_userRelationships->{$_}}]} (qw'follows ignores avoids blocks friends');
+        $userRelationships{incoming_friend_requests}=[map {$_+0} keys %{$r_userRelationships->{friendshipRequestsIn}}];
+        $userRelationships{outgoing_friend_requests}=[map {$_+0} keys %{$r_userRelationships->{friendshipRequestsOut}}];
+        my @inducedTraffic=sendClient($self,$hdl,['s.user.list_relationships',encode_base64url($JSON_ENCODER->(\%userRelationships))],$cmdId);
         closeClientConnection($self,$hdl,'induced traffic flood')
             if($inducedTraffic[0] && defined checkInducedTrafficFlood($self,$r_userInfo,@inducedTraffic));
       },
       $r_connInfo,$login,$r_userInfo);
     return;
   }else{
-    my @friendCmds=(['FRIENDLISTBEGIN']);
-    map {push(@friendCmds,['FRIENDLIST','userName='.$r_userInfo->{friendAccounts}{$_},$includeOptionalTagParams ? 'accountId='.$_ : ()])} (sort keys %{$r_userInfo->{friendAccounts}});
-    push(@friendCmds,['FRIENDLISTEND']);
-    return sendClientMulti($self,$hdl,\@friendCmds,$cmdId);
+    my (@follows,@avoids,@blocks);
+    foreach my $accId (keys %{$r_userInfo->{userRelationships}}) {
+      my $rel=$r_userInfo->{userRelationships}{$accId}{relationship};
+      if($rel == USR_REL_FOLLOW) {
+        push(@follows,$accId+0);
+      }elsif($rel == USR_REL_AVOID) {
+        push(@avoids,$accId+0);
+      }elsif($rel == USR_REL_BLOCK) {
+        push(@blocks,$accId+0);
+      }
+    }
+    my %userRelationships = (
+      friends => [map {$_+0} keys %{$r_userInfo->{friendAccounts}}],
+      follows => \@follows,
+      incoming_friend_requests => [map {$_+0} keys %{$r_userInfo->{friendshipRequestsIn}}],
+      outgoing_friend_requests => [map {$_+0} keys %{$r_userInfo->{friendshipRequestsOut}}],
+      ignores => [map {$_+0} keys %{$r_userInfo->{ignoredAccounts}}],
+      avoids => \@avoids,
+      blocks => \@blocks,
+        );
+    return sendClient($self,$hdl,['s.user.list_relationships',encode_base64url($JSON_ENCODER->(\%userRelationships))],$cmdId);
   }
+}
+
+sub hWhois {
+  my ($self,$hdl,$r_connInfo,$login,$r_userInfo,$r_cmd,$cmdId)=@_;
+  my $whoisAccountId=$r_cmd->[1];
+  return closeClientConnection($self,$hdl,'protocol error','invalid c.user.whois parameter')
+      unless($whoisAccountId =~ REGEX_ACCOUNTID);
+  $whoisAccountId+=0;
+  my $r_whoisData;
+  if($whoisAccountId) {
+    my $whoisUserName = $self->{accounts}{$whoisAccountId} //
+        $r_userInfo->{friendAccounts}{$whoisAccountId} //
+        $r_userInfo->{friendshipRequestsIn}{$whoisAccountId} //
+        $r_userInfo->{friendshipRequestsOut}{$whoisAccountId} //
+        $r_userInfo->{ignoredAccounts}{$whoisAccountId};
+    $whoisUserName=$r_userInfo->{userRelationships}{$whoisAccountId}{userName}
+      if(! defined $whoisUserName && exists $r_userInfo->{userRelationships}{$whoisAccountId});
+    if(defined $whoisUserName) {
+      $r_whoisData = {name => $whoisUserName};
+    }else{
+      $r_whoisData = {error => 'user not found online or in your contacts'};
+    }
+  }else{
+    $r_whoisData = {error => 'invalid accountId value'};
+  }
+  return sendClient($self,$hdl,['s.user.whois',$whoisAccountId,encode_base64url($JSON_ENCODER->($r_whoisData))],$cmdId);
+}
+
+sub hWhoisName {
+  my ($self,$hdl,$r_connInfo,$login,$r_userInfo,$r_cmd,$cmdId)=@_;
+  my $whoisUserName=$r_cmd->[1];
+  return closeClientConnection($self,$hdl,'protocol error','invalid c.user.whoisName parameter')
+      unless($whoisUserName =~ REGEX_USERNAME);
+  my $onlineUserName=$self->{lcUsers}{lc($whoisUserName)};
+  return sendClient($self,$hdl,['s.user.whoisName',$whoisUserName,encode_base64url($JSON_ENCODER->({id => $self->{users}{$onlineUserName}{accountId}+0}))],$cmdId)
+      if(defined $onlineUserName);
+  if(exists $self->{accountManagementSvc}{GETACCOUNTID}) {
+    $self->{accountManagementSvc}{GETACCOUNTID}(
+      sub {
+        return if($hdl->destroyed());
+        my $whoisAccountId=shift;
+        my $r_whoisResult = defined $whoisAccountId ? {id => $whoisAccountId+0} : {error => 'user not found'};
+        my @inducedTraffic=sendClient($self,$hdl,['s.user.whoisName',$whoisUserName,encode_base64url($JSON_ENCODER->($r_whoisResult))],$cmdId);
+        closeClientConnection($self,$hdl,'induced traffic flood')
+            if($inducedTraffic[0] && defined checkInducedTrafficFlood($self,$r_userInfo,@inducedTraffic));
+      },
+      $r_connInfo,$login,$r_userInfo,$whoisUserName);
+    return;
+  }
+  return sendClient($self,$hdl,['s.user.whoisName',$whoisUserName,encode_base64url($JSON_ENCODER->({error => 'c.user.whoisName command not supported for offline users'}))],$cmdId);
 }
 
 sub hChannelTopic {
